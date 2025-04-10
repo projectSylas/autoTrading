@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 import logging
+from pydantic_settings import BaseSettings
 
 # .env 파일 로드 (파일이 없어도 오류 발생 안 함)
 load_dotenv()
@@ -8,64 +9,93 @@ load_dotenv()
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- API Keys ---
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-# 'True' 문자열을 boolean True로 변환, 기본값은 True (페이퍼 트레이딩)
-ALPACA_PAPER = os.getenv("ALPACA_PAPER", "True").lower() == 'true'
+class Settings(BaseSettings):
+    # --- API Keys ---
+    ALPACA_API_KEY: str = os.getenv("ALPACA_API_KEY", "")
+    ALPACA_SECRET_KEY: str = os.getenv("ALPACA_SECRET_KEY", "")
+    ALPACA_PAPER: bool = os.getenv("ALPACA_PAPER", "True").lower() == "true"
+    BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
+    BINANCE_SECRET_KEY: str = os.getenv("BINANCE_SECRET_KEY", "")
+    NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
+    SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")
 
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+    # --- Database ---
+    DB_HOST: str = os.getenv("DB_HOST", "db")
+    DB_PORT: int = int(os.getenv("DB_PORT", "5433"))
+    DB_USER: str = os.getenv("DB_USER", "trading_user")
+    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "trading_password")
+    DB_NAME: str = os.getenv("DB_NAME", "trading_db")
 
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+    # --- AI Model Hyperparameters (Existing) ---
+    PREDICTOR_SYMBOL: str = os.getenv("PREDICTOR_SYMBOL", "BTCUSDT")
+    SEQ_LEN: int = int(os.getenv("SEQ_LEN", "60"))
+    HIDDEN_DIM: int = int(os.getenv("HIDDEN_DIM", "128"))
+    N_LAYERS: int = int(os.getenv("N_LAYERS", "2"))
+    DROPOUT: float = float(os.getenv("DROPOUT", "0.2"))
+    LEARNING_RATE: float = float(os.getenv("LEARNING_RATE", "0.001"))
+    EPOCHS: int = int(os.getenv("EPOCHS", "50"))
+    BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "32"))
+    MODEL_TYPE: str = os.getenv("MODEL_TYPE", "LSTM") # LSTM or Transformer
+    MODEL_SAVE_PATH: str = os.getenv("MODEL_SAVE_PATH", "./model_weights/price_predictor.pt")
 
-# --- Strategy Parameters ---
-# .env 파일에 없으면 기본값 사용
-CORE_ASSETS = os.getenv("CORE_ASSETS", "SPY,QQQ,GLD,SGOV,XLP").split(',')
-CORE_REBALANCE_THRESHOLD = float(os.getenv("CORE_REBALANCE_THRESHOLD", "0.15"))
+    RL_ENV_SYMBOL: str = os.getenv("RL_ENV_SYMBOL", "BTCUSDT")
+    RL_TIMESTEPS: int = int(os.getenv("RL_TIMESTEPS", "100000"))
+    RL_ALGORITHM: str = os.getenv("RL_ALGORITHM", "PPO")
+    RL_POLICY: str = os.getenv("RL_POLICY", "MlpPolicy")
+    RL_LEARNING_RATE: float = float(os.getenv("RL_LEARNING_RATE", "0.0003"))
+    RL_BATCH_SIZE: int = int(os.getenv("RL_BATCH_SIZE", "64"))
+    RL_MODEL_SAVE_PATH: str = os.getenv("RL_MODEL_SAVE_PATH", "./model_weights/rl_model.zip")
+    RL_NORMALIZATION_REFERENCE_PRICE: float | None = os.getenv("RL_NORMALIZATION_REFERENCE_PRICE")
+    if RL_NORMALIZATION_REFERENCE_PRICE is not None:
+        RL_NORMALIZATION_REFERENCE_PRICE = float(RL_NORMALIZATION_REFERENCE_PRICE)
 
-# --- Challenge Strategy Settings ---
-CHALLENGE_SYMBOLS = os.getenv("CHALLENGE_SYMBOLS", "BTC-USD,ETH-USD").split(',')
-CHALLENGE_SYMBOL = os.getenv("CHALLENGE_SYMBOL", "BTCUSDT")
-CHALLENGE_LEVERAGE = int(os.getenv("CHALLENGE_LEVERAGE", "10"))
-CHALLENGE_SEED_PERCENTAGE = float(os.getenv("CHALLENGE_SEED_PERCENTAGE", "0.05"))
-CHALLENGE_TP_RATIO = float(os.getenv("CHALLENGE_TP_RATIO", "0.10"))
-CHALLENGE_SL_RATIO = float(os.getenv("CHALLENGE_SL_RATIO", "0.05"))
-CHALLENGE_SMA_PERIOD = int(os.getenv("CHALLENGE_SMA_PERIOD", "7"))
+    # --- Hugging Face Models --- New Settings
+    HF_SENTIMENT_MODEL_NAME: str = os.getenv("HF_SENTIMENT_MODEL_NAME", "ProsusAI/finbert")
+    HF_TIMESERIES_MODEL_NAME: str = os.getenv("HF_TIMESERIES_MODEL_NAME", "google/timesfm-1.0-200m")
+    MODEL_WEIGHTS_DIR: str = os.getenv("MODEL_WEIGHTS_DIR", "./model_weights/")
+    ENABLE_HF_SENTIMENT: bool = os.getenv("ENABLE_HF_SENTIMENT", "True").lower() == "true"
+    ENABLE_HF_TIMESERIES: bool = os.getenv("ENABLE_HF_TIMESERIES", "False").lower() == "true"
+    SENTIMENT_NEUTRAL_THRESHOLD_LOW: float = float(os.getenv("SENTIMENT_NEUTRAL_THRESHOLD_LOW", "0.4"))
+    SENTIMENT_NEUTRAL_THRESHOLD_HIGH: float = float(os.getenv("SENTIMENT_NEUTRAL_THRESHOLD_HIGH", "0.6"))
+    SENTIMENT_CUTOFF_SCORE: float = float(os.getenv("SENTIMENT_CUTOFF_SCORE", "0.35"))
+    HF_MAX_SEQ_LENGTH: int = int(os.getenv("HF_MAX_SEQ_LENGTH", "512"))
+    HF_DEVICE: str = os.getenv("HF_DEVICE", "auto") # 'auto', 'cuda', 'cpu'
 
-# --- Volatility Alert Settings ---
-ENABLE_VOLATILITY = os.getenv("ENABLE_VOLATILITY", "True").lower() == 'true'
-VOLATILITY_THRESHOLD = float(os.getenv("VOLATILITY_THRESHOLD", "5.0"))
+    # --- Strategy Parameters ---
+    # .env 파일에 없으면 기본값 사용
+    CORE_ASSETS: list = os.getenv("CORE_ASSETS", "SPY,QQQ,GLD,SGOV,XLP").split(',')
+    CORE_RSI_THRESHOLD: int = int(os.getenv("CORE_RSI_THRESHOLD", "30"))
+    CORE_VIX_THRESHOLD: int = int(os.getenv("CORE_VIX_THRESHOLD", "25"))
+    CORE_REBALANCE_THRESHOLD: float = float(os.getenv("CORE_REBALANCE_THRESHOLD", "0.15"))
+    CHALLENGE_SYMBOLS: list = os.getenv("CHALLENGE_SYMBOLS", "BTC-USD,ETH-USD").split(',')
+    CHALLENGE_SYMBOL: str = os.getenv("CHALLENGE_SYMBOL", "BTCUSDT")
+    CHALLENGE_LEVERAGE: int = int(os.getenv("CHALLENGE_LEVERAGE", "10"))
+    CHALLENGE_SEED_PERCENTAGE: float = float(os.getenv("CHALLENGE_SEED_PERCENTAGE", "0.05"))
+    CHALLENGE_TP_RATIO: float = float(os.getenv("CHALLENGE_TP_RATIO", "0.10"))
+    CHALLENGE_SL_RATIO: float = float(os.getenv("CHALLENGE_SL_RATIO", "0.05"))
+    CHALLENGE_SMA_PERIOD: int = int(os.getenv("CHALLENGE_SMA_PERIOD", "7"))
+    CHALLENGE_RSI_PERIOD: int = int(os.getenv("CHALLENGE_RSI_PERIOD", "14"))
+    CHALLENGE_RSI_LOW: int = int(os.getenv("CHALLENGE_RSI_LOW", "30"))
+    CHALLENGE_INTERVAL: str = os.getenv("CHALLENGE_INTERVAL", "1h")
+    CHALLENGE_LOOKBACK_PERIOD: str = os.getenv("CHALLENGE_LOOKBACK_PERIOD", "7d")
+    CHALLENGE_RISK_PER_TRADE: float = float(os.getenv("CHALLENGE_RISK_PER_TRADE", "0.01"))
 
-# --- AI Model Settings ---
-# Price Predictor
-PREDICTOR_SYMBOL = os.getenv("PREDICTOR_SYMBOL", "BTCUSDT")
-PREDICTOR_INPUT_SEQ_LEN = int(os.getenv("PREDICTOR_INPUT_SEQ_LEN", "60"))
-PREDICTOR_OUTPUT_SEQ_LEN = int(os.getenv("PREDICTOR_OUTPUT_SEQ_LEN", "3"))
-PREDICTOR_HIDDEN_DIM = int(os.getenv("PREDICTOR_HIDDEN_DIM", "64"))
-PREDICTOR_NUM_LAYERS = int(os.getenv("PREDICTOR_NUM_LAYERS", "2"))
-PREDICTOR_DROPOUT = float(os.getenv("PREDICTOR_DROPOUT", "0.2"))
-PREDICTOR_LR = float(os.getenv("PREDICTOR_LR", "0.001"))
-PREDICTOR_EPOCHS = int(os.getenv("PREDICTOR_EPOCHS", "50"))
-PREDICTOR_BATCH_SIZE = int(os.getenv("PREDICTOR_BATCH_SIZE", "32"))
-PREDICTOR_MODEL_TYPE = os.getenv("PREDICTOR_MODEL_TYPE", "LSTM").upper()
-PREDICTOR_MODEL_PATH = os.path.join("model_weights", f"{PREDICTOR_MODEL_TYPE.lower()}_predictor.pth")
+    # --- Volatility Alert Settings ---
+    ENABLE_VOLATILITY: bool = os.getenv("ENABLE_VOLATILITY", "True").lower() == "true"
+    VOLATILITY_THRESHOLD: float = float(os.getenv("VOLATILITY_THRESHOLD", "5.0"))
 
-# Reinforcement Learning
-RL_ENV_SYMBOL = os.getenv("RL_ENV_SYMBOL", "BTCUSDT")
-RL_TRAIN_TIMESTEPS = int(os.getenv("RL_TRAIN_TIMESTEPS", "100000"))
-RL_ALGORITHM = os.getenv("RL_ALGORITHM", "PPO").upper()
-RL_POLICY = os.getenv("RL_POLICY", "MlpPolicy")
-RL_LEARNING_RATE = float(os.getenv("RL_LEARNING_RATE", "0.0003"))
-RL_BATCH_SIZE = int(os.getenv("RL_BATCH_SIZE", "64"))
-RL_MODEL_PATH = os.path.join("model_weights", f"{RL_ALGORITHM.lower()}_trading_model.zip")
-RL_NORMALIZATION_REFERENCE_PRICE = float(os.getenv("RL_NORMALIZATION_REFERENCE_PRICE", "0.0"))
+    # --- Feature Flags ---
+    ENABLE_BACKTEST: bool = os.getenv("ENABLE_BACKTEST", "True").lower() == "true"
+    ENABLE_SENTIMENT_ANALYSIS: bool = os.getenv("ENABLE_SENTIMENT_ANALYSIS", "True").lower() == "true"
+    ENABLE_VOLATILITY_ALERT: bool = os.getenv("ENABLE_VOLATILITY_ALERT", "True").lower() == "true"
 
-# --- Module Execution Flags ---
-# .env 파일에 없으면 기본값 True 사용
-ENABLE_BACKTEST = os.getenv("ENABLE_BACKTEST", "True").lower() == 'true'
-ENABLE_SENTIMENT = os.getenv("ENABLE_SENTIMENT", "True").lower() == 'true'
+# 설정 인스턴스 생성 (다른 모듈에서 import하여 사용)
+settings = Settings()
+
+# 사용 예시:
+# from src.config.settings import settings
+# print(settings.ALPACA_API_KEY)
+# print(settings.HF_SENTIMENT_MODEL_NAME)
 
 # --- Environment Variable Check ---
 def check_env_vars():
@@ -87,14 +117,14 @@ def check_env_vars():
         warnings.append(f"Challenge Trading 실행에 필요한 환경 변수 누락: {', '.join(missing)}. 일부 기능이 제한될 수 있습니다.")
 
     # Sentiment Analysis 관련 변수 확인
-    if ENABLE_SENTIMENT and not all(os.getenv(var) for var in required_sentiment):
+    if ENABLE_SENTIMENT_ANALYSIS and not all(os.getenv(var) for var in required_sentiment):
         missing = [var for var in required_sentiment if not os.getenv(var)]
         warnings.append(f"Sentiment Analysis 실행에 필요한 환경 변수 누락: {', '.join(missing)}. 감성 분석 기능이 비활성화될 수 있습니다.")
-        # 필요시 여기서 ENABLE_SENTIMENT = False 처리 가능
+        # 필요시 여기서 ENABLE_SENTIMENT_ANALYSIS = False 처리 가능
 
     # Volatility Alert는 외부 API 키가 직접 필요하지 않음 (데이터는 yfinance 등에서 온다고 가정)
     # 그러나 Slack 알림은 필요할 수 있음
-    if ENABLE_VOLATILITY and not os.getenv("SLACK_WEBHOOK_URL"):
+    if ENABLE_VOLATILITY_ALERT and not os.getenv("SLACK_WEBHOOK_URL"):
          warnings.append("Volatility Alert 실행 시 Slack 알림에 필요한 SLACK_WEBHOOK_URL 환경 변수가 누락되었습니다.")
 
     # --- Added: Check for RL Reference Price ---

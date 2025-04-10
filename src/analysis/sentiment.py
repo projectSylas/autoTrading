@@ -1,8 +1,11 @@
 import logging
+import torch # For device detection
 from newsapi import NewsApiClient
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer
 import pandas as pd
 from datetime import datetime, timedelta
+from typing import List, Dict, Tuple, Optional
+import numpy as np
 
 # config 모듈 로드 (NewsAPI 키)
 try:
@@ -11,24 +14,67 @@ except ImportError:
     logging.error("config.py 파일을 찾을 수 없습니다.")
     config = None
 
-# --- 전역 변수 (모델 로딩 등) ---
-# 감성 분석 파이프라인 (FinBERT 모델 사용 예시)
-# 모델 로딩은 초기화 시 한 번만 수행하는 것이 효율적
-sentiment_pipeline = None
-FINBERT_MODEL_NAME = "ProsusAI/finbert" # FinBERT 모델 경로
+# 설정 모듈 로드
+from src.config.settings import settings
+# DB 로깅 함수 임포트 시도
+try:
+    from src.utils.database import log_sentiment_to_db
+except ImportError:
+    log_sentiment_to_db = None
+    logging.warning("Database logging function (log_sentiment_to_db) not found. DB logging disabled for sentiment.")
 
-def initialize_sentiment_model():
-    """감성 분석 모델을 초기화합니다."""
-    global sentiment_pipeline
-    if sentiment_pipeline is None:
-        try:
-            logging.info(f"감성 분석 모델 로딩 시도: {FINBERT_MODEL_NAME}")
-            # device=-1 은 CPU 사용을 의미 (GPU 사용 시 0 이상)
-            sentiment_pipeline = pipeline("sentiment-analysis", model=FINBERT_MODEL_NAME, device=-1)
-            logging.info("✅ 감성 분석 모델 로딩 완료.")
-        except Exception as e:
-            logging.error(f"❌ 감성 분석 모델 로딩 실패: {e}. 'transformers' 및 'torch'/'tensorflow' 설치 확인 필요.")
-            sentiment_pipeline = None # 실패 시 None 유지
+# --- 전역 변수 (모델 로딩 등) ---
+sentiment_pipeline = None
+sentiment_tokenizer = None
+_model_loaded = False
+
+def _get_device() -> str:
+    """Determine the device to run the model on based on settings."""
+    if settings.HF_DEVICE == 'auto':
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return settings.HF_DEVICE
+
+def initialize_sentiment_model(force_reload: bool = False):
+    """Hugging Face 감성 분석 모델과 토크나이저를 초기화합니다."""
+    global sentiment_pipeline, sentiment_tokenizer, _model_loaded
+    
+    if not settings.ENABLE_HF_SENTIMENT:
+        logging.info("Hugging Face sentiment analysis is disabled in settings.")
+        sentiment_pipeline = None
+        sentiment_tokenizer = None
+        _model_loaded = False
+        return
+
+    if _model_loaded and not force_reload:
+        return
+
+    try:
+        device_name = _get_device()
+        device_id = 0 if device_name == 'cuda' else -1 # pipeline expects device index
+        logging.info(f"Initializing Hugging Face sentiment model: {settings.HF_SENTIMENT_MODEL_NAME} on device: {device_name}")
+
+        # Load tokenizer first to get max length if needed (though pipeline handles truncation)
+        sentiment_tokenizer = AutoTokenizer.from_pretrained(
+            settings.HF_SENTIMENT_MODEL_NAME,
+            cache_dir=settings.MODEL_WEIGHTS_DIR # Use configured cache/save directory
+        )
+        
+        sentiment_pipeline = pipeline(
+            "sentiment-analysis", 
+            model=settings.HF_SENTIMENT_MODEL_NAME, 
+            tokenizer=sentiment_tokenizer, # Reuse loaded tokenizer
+            device=device_id, 
+            cache_dir=settings.MODEL_WEIGHTS_DIR
+        )
+        _model_loaded = True
+        logging.info("✅ Hugging Face sentiment model and tokenizer loaded successfully.")
+
+    except Exception as e:
+        logging.error(f"❌ Failed to load Hugging Face sentiment model: {e}. Check model name, paths, and dependencies ('transformers', 'torch').")
+        sentiment_pipeline = None
+        sentiment_tokenizer = None
+        _model_loaded = False
+        # Optionally send Slack alert here about model loading failure
 
 # --- 뉴스 데이터 수집 --- 
 def fetch_recent_news(keyword: str, days_ago: int = 1, language: str = 'en', page_size: int = 20) -> list[dict]:
@@ -75,147 +121,210 @@ def fetch_recent_news(keyword: str, days_ago: int = 1, language: str = 'en', pag
         logging.error(f"NewsAPI 호출 중 오류 발생: {e}", exc_info=True)
         return []
 
-# --- 감성 분석 --- 
-def analyze_sentiment(texts: list[str]) -> str:
-    """주어진 텍스트 리스트의 전반적인 감성을 분석합니다. (FinBERT 사용 가정)
+# --- 감성 분석 (수정됨) --- 
+def analyze_sentiment_hf(texts: List[str]) -> List[Dict[str, float | str]]:
+    """주어진 텍스트 리스트의 감성을 개별적으로 분석하고 점수를 정규화합니다.
 
     Args:
-        texts (list[str]): 분석할 텍스트(뉴스 제목, 내용 등) 리스트.
+        texts (list[str]): 분석할 텍스트 리스트.
 
     Returns:
-        str: 'positive', 'negative', 'neutral' 중 하나.
-             모델 로딩 실패 또는 분석 중 오류 시 'neutral' 반환.
+        list[dict]: 각 텍스트에 대한 분석 결과 리스트.
+                    각 dict는 {'label': str, 'score': float} 형태.
+                    - label: 'positive', 'neutral', 'negative'
+                    - score: 0.0 (가장 부정적) ~ 1.0 (가장 긍정적) 사이의 값.
+                    모델 로딩 실패 또는 분석 오류 시 빈 리스트 또는 기본값 리스트 반환.
     """
-    global sentiment_pipeline
-    # 모델이 초기화되지 않았으면 초기화 시도
-    if sentiment_pipeline is None:
-        initialize_sentiment_model()
-        # 그래도 초기화 실패 시
-        if sentiment_pipeline is None:
-            logging.warning("감성 분석 모델 사용 불가. 'neutral' 반환.")
-            return "neutral"
+    global sentiment_pipeline, sentiment_tokenizer
+    
+    if not _model_loaded:
+        initialize_sentiment_model() # Try to initialize if not loaded
+        if not _model_loaded: # Still not loaded
+             logging.warning("Sentiment model not available. Returning neutral scores.")
+             return [{"label": "neutral", "score": 0.5} for _ in texts]
 
     if not texts:
-        return "neutral"
+        return []
 
+    results_list = []
     try:
-        logging.info(f"텍스트 {len(texts)}건 감성 분석 시작...")
-        # 파이프라인을 사용하여 감성 분석 수행
-        # truncation=True 옵션은 모델 최대 길이 초과 시 텍스트 자름
-        results = sentiment_pipeline(texts, truncation=True)
+        logging.info(f"Analyzing sentiment for {len(texts)} texts using {settings.HF_SENTIMENT_MODEL_NAME}...")
+        # Run inference
+        predictions = sentiment_pipeline(
+            texts, 
+            truncation=True, 
+            max_length=min(settings.HF_MAX_SEQ_LENGTH, sentiment_tokenizer.model_max_length)
+        )
 
-        # 결과 집계 (예: positive, negative 개수 비교)
-        sentiment_counts = pd.Series([r['label'] for r in results]).value_counts()
-        positive_count = sentiment_counts.get('positive', 0)
-        negative_count = sentiment_counts.get('negative', 0)
-        neutral_count = sentiment_counts.get('neutral', 0)
+        # Process predictions
+        for pred in predictions:
+            raw_label = pred['label'].lower()
+            raw_score = pred['score']
+            final_label = "neutral" # Default to neutral
+            normalized_score = 0.5 # Default score for neutral
 
-        logging.info(f"감성 분석 결과: Positive={positive_count}, Negative={negative_count}, Neutral={neutral_count}")
+            if raw_label == 'positive':
+                # Map positive score (0~1) to normalized score (0.5 ~ 1.0)
+                normalized_score = 0.5 + (raw_score / 2.0)
+                if normalized_score >= settings.SENTIMENT_NEUTRAL_THRESHOLD_HIGH:
+                    final_label = "positive"
+            elif raw_label == 'negative':
+                # Map negative score (0~1) to normalized score (0.0 ~ 0.5)
+                normalized_score = 0.5 - (raw_score / 2.0)
+                if normalized_score <= settings.SENTIMENT_NEUTRAL_THRESHOLD_LOW:
+                    final_label = "negative"
+            # Handle cases where the model might output 'neutral' directly if supported
+            elif raw_label == 'neutral':
+                 normalized_score = 0.5 # Keep score as 0.5 for neutral
+                 # Label is already neutral
 
-        # 최종 감성 결정 로직 (개선 가능)
-        if positive_count > negative_count and positive_count > neutral_count:
-            return "positive"
-        elif negative_count > positive_count and negative_count > neutral_count:
-             # 요구사항: '공포' 키워드 -> 'negative'와 매핑
-             logging.warning("** 부정적 뉴스 감성 감지! **")
-             return "negative" # 'bearish' 대신 모델 결과 라벨 사용
-        else:
-            return "neutral"
+            results_list.append({"label": final_label, "score": round(normalized_score, 4)})
+            
+        logging.info(f"Sentiment analysis completed for {len(texts)} texts.")
 
     except Exception as e:
-        logging.error(f"감성 분석 중 오류 발생: {e}", exc_info=True)
-        return "neutral" # 오류 시 중립 반환
+        logging.error(f"Error during sentiment analysis: {e}", exc_info=True)
+        # Return neutral defaults on error for all texts
+        results_list = [{"label": "neutral", "score": 0.5} for _ in texts]
 
-# --- 통합 함수 --- 
-def get_market_sentiment(keyword: str, days_ago: int = 1, language: str = 'en') -> tuple[str, float, pd.DataFrame]:
-    """특정 키워드 관련 뉴스를 가져와 전반적인 시장 감성, 점수, 기사 DataFrame을 반환하고 DB에 로그를 기록합니다.
+    return results_list
+
+# --- 통합 함수 (수정됨) --- 
+def get_market_sentiment(keyword: str, days_ago: int = 1, language: str = 'en') -> Tuple[str, float, pd.DataFrame]:
+    """특정 키워드 관련 뉴스를 가져와 전반적인 시장 감성 라벨, 평균 점수, 기사 DataFrame을 반환합니다.
+       DB 로깅은 log_sentiment_to_db 함수가 있을 경우 시도합니다.
 
     Returns:
-        tuple[str, float, pd.DataFrame]: (감성 라벨, 평균 점수, 기사 DataFrame)
-                                         오류 시 ('neutral', 0.0, 빈 DataFrame)
+        Tuple[str, float, pd.DataFrame]: 
+            (전체 감성 라벨, 평균 정규화 점수, 원본 뉴스 기사 DataFrame)
+            오류 또는 분석 불가 시 ('neutral', 0.5, 빈 DataFrame) 반환.
     """
-    # DB 로깅 함수 임포트 (실패 시 로깅만 불가능)
-    log_sentiment_to_db_func = None
-    try:
-        from src.utils.database import log_sentiment_to_db as log_sentiment_to_db_func
-    except ImportError:
-        logging.warning("Database logging function (log_sentiment_to_db) not found. DB logging disabled.")
+    global log_sentiment_to_db
+    logging.info(f"--- Analyzing market sentiment for '{keyword}' --- ")
+    
+    # Check if HF sentiment is enabled, if not, return neutral immediately
+    if not settings.ENABLE_HF_SENTIMENT:
+         logging.info("HF Sentiment analysis disabled. Returning neutral.")
+         # Log disabled status to DB if needed
+         if log_sentiment_to_db:
+              try: 
+                  log_sentiment_to_db(keyword=keyword, sentiment='disabled', score=0.5, article_count=0, model_name='N/A')
+              except Exception as db_err:
+                  logging.error(f"DB logging failed for disabled sentiment: {db_err}")
+         return "neutral", 0.5, pd.DataFrame()
 
-    logging.info(f"--- '{keyword}' 시장 감성 분석 시작 --- ")
+    # Fetch news
     articles = fetch_recent_news(keyword, days_ago, language)
-    articles_df = pd.DataFrame(articles) # 결과 반환용
+    articles_df = pd.DataFrame(articles)
 
     if not articles:
-        logging.warning("분석할 뉴스 없음. ('neutral', 0.0) 반환.")
-        # DB 로그 (선택 사항: 분석 대상 없었음 기록)
-        # if log_sentiment_to_db_func:
-        #     log_sentiment_to_db_func(keyword=keyword, sentiment='N/A', score=None, article_count=0)
-        return "neutral", 0.0, pd.DataFrame()
+        logging.warning("No news found for analysis. Returning neutral.")
+        if log_sentiment_to_db:
+            try:
+                 log_sentiment_to_db(keyword=keyword, sentiment='no_data', score=0.5, article_count=0, model_name=settings.HF_SENTIMENT_MODEL_NAME)
+            except Exception as db_err:
+                 logging.error(f"DB logging failed for no news data: {db_err}")
+        return "neutral", 0.5, pd.DataFrame()
 
-    # 분석할 텍스트 선택 (예: 제목 + 설명)
+    # Prepare texts for analysis
     texts_to_analyze = []
     for article in articles:
         title = article.get('title', '') or ''
         description = article.get('description', '') or ''
+        # Use content if available and description is short?
+        # content = article.get('content', '') or '' 
         text = f"{title}. {description}".strip()
-        if text != ".":
+        # Skip empty or placeholder texts
+        if text and text != ".":
             texts_to_analyze.append(text)
 
     if not texts_to_analyze:
-        logging.warning("분석할 텍스트 없음. ('neutral', 0.0) 반환.")
-        return "neutral", 0.0, articles_df
+        logging.warning("No valid text content found in fetched news. Returning neutral.")
+        # Log appropriately if needed
+        return "neutral", 0.5, articles_df
 
-    overall_sentiment, avg_score = analyze_sentiment(texts_to_analyze)
+    # Analyze sentiment for all texts
+    sentiment_results = analyze_sentiment_hf(texts_to_analyze)
 
-    # DB에 로그 기록
-    if log_sentiment_to_db_func:
+    if not sentiment_results:
+        logging.warning("Sentiment analysis returned no results. Returning neutral.")
+        # Log appropriately if needed
+        return "neutral", 0.5, articles_df
+
+    # Calculate overall sentiment and average score
+    scores = [res['score'] for res in sentiment_results]
+    average_score = round(np.mean(scores), 4) if scores else 0.5
+    
+    # Determine overall label based on average score and thresholds
+    overall_label = "neutral"
+    if average_score >= settings.SENTIMENT_NEUTRAL_THRESHOLD_HIGH:
+        overall_label = "positive"
+    elif average_score <= settings.SENTIMENT_NEUTRAL_THRESHOLD_LOW:
+        overall_label = "negative"
+        # Log warning for strong negative sentiment
+        logging.warning(f"** Strong negative sentiment detected for '{keyword}' (Avg Score: {average_score:.2f}) **")
+
+    # Log results to DB if function is available
+    if log_sentiment_to_db:
         try:
-            log_sentiment_to_db_func(
+            log_sentiment_to_db(
                 keyword=keyword,
-                sentiment=overall_sentiment,
-                score=avg_score,
-                article_count=len(articles)
+                sentiment=overall_label,
+                score=average_score,
+                article_count=len(articles),
+                model_name=settings.HF_SENTIMENT_MODEL_NAME
             )
             logging.info(f"[DB] Sentiment log saved for '{keyword}'.")
         except Exception as db_err:
-             logging.error(f"Sentiment DB logging failed for '{keyword}': {db_err}")
+            logging.error(f"Sentiment DB logging failed for '{keyword}': {db_err}")
 
-    logging.info(f"--- '{keyword}' 시장 감성 분석 완료: {overall_sentiment} (Score: {avg_score:.2f}) ---")
-    return overall_sentiment, avg_score, articles_df # 감성, 점수, 기사 DF 반환
+    logging.info(f"--- Market sentiment analysis complete for '{keyword}': Label={overall_label}, Avg Score={average_score:.2f} --- ")
+    return overall_label, average_score, articles_df
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # NewsAPI 키 설정 확인
-    if not config or not config.NEWS_API_KEY or config.NEWS_API_KEY == "YOUR_NEWS_API_KEY":
-        logging.warning("테스트를 위해 .env 파일에 유효한 NEWS_API_KEY를 설정해주세요.")
+    # Ensure model initialization is attempted if enabled
+    if settings.ENABLE_HF_SENTIMENT:
+         initialize_sentiment_model()
+
+    # NewsAPI Key Check (using settings)
+    if not settings.NEWS_API_KEY:
+        logging.warning("Please set a valid NEWS_API_KEY in the .env file for testing.")
     else:
-        # 1. 뉴스 수집 테스트
-        logging.info("\n--- 뉴스 수집 테스트 (Bitcoin) ---")
+        # 1. News Fetch Test
+        logging.info("\n--- News Fetch Test (Bitcoin) ---")
         bitcoin_news = fetch_recent_news("Bitcoin", days_ago=2, page_size=5)
         if bitcoin_news:
             for i, news in enumerate(bitcoin_news):
-                print(f"  {i+1}. {news['title']}")
+                 print(f"  {i+1}. {news['title']}")
         else:
-            print("  뉴스 수집 실패 또는 결과 없음.")
+             print("  News fetch failed or no results.")
 
-        # 2. 감성 분석 테스트 (모델 초기화 필요)
-        logging.info("\n--- 감성 분석 테스트 (모델 로딩 시도) ---")
-        # 모델 로딩 시 시간이 걸릴 수 있음
-        test_texts = [
-            "Stock market surges to new highs on positive economic data.",
-            "Tech stocks plummet amid fears of rising interest rates.",
-            "Company reports record profits, exceeding expectations.",
-            "Regulatory concerns cast shadow over crypto market."
-        ]
-        sentiment_result = analyze_sentiment(test_texts)
-        print(f"  테스트 텍스트 감성 분석 결과: Label={sentiment_result}")
+        # 2. Sentiment Analysis Test (using new function)
+        logging.info("\n--- Sentiment Analysis Test ---")
+        if settings.ENABLE_HF_SENTIMENT and _model_loaded:
+            test_texts = [
+                "Stock market surges to new highs on positive economic data.",
+                "Tech stocks plummet amid fears of rising interest rates.",
+                "Company reports record profits, exceeding expectations.",
+                "Regulatory concerns cast shadow over crypto market.",
+                "The weather today is quite pleasant."
+            ]
+            analysis_results = analyze_sentiment_hf(test_texts)
+            print("  Individual Sentiment Analysis Results:")
+            for text, result in zip(test_texts, analysis_results):
+                print(f"    Text: {text[:50]}... -> Label: {result['label']}, Score: {result['score']:.3f}")
+        elif not settings.ENABLE_HF_SENTIMENT:
+             print("  Sentiment analysis disabled in settings.")
+        else:
+             print("  Sentiment model failed to load, analysis skipped.")
 
-        # 3. 통합 함수 테스트
-        logging.info("\n--- 시장 감성 통합 테스트 (Bitcoin) ---")
-        btc_sentiment, btc_score, _ = get_market_sentiment("Bitcoin", days_ago=1)
-        print(f"  Bitcoin 최근 뉴스 기반 시장 감성: {btc_sentiment} (Score: {btc_score:.2f})")
+        # 3. Integrated Market Sentiment Test
+        logging.info("\n--- Integrated Market Sentiment Test (Bitcoin) ---")
+        btc_label, btc_score, _ = get_market_sentiment("Bitcoin", days_ago=1)
+        print(f"  Bitcoin Market Sentiment: Label={btc_label}, Avg Score={btc_score:.3f}")
 
-        logging.info("\n--- 시장 감성 통합 테스트 (Federal Reserve) ---")
-        fed_sentiment, fed_score, _ = get_market_sentiment("Federal Reserve", days_ago=3)
-        print(f"  Federal Reserve 최근 뉴스 기반 시장 감성: {fed_sentiment} (Score: {fed_score:.2f})") 
+        logging.info("\n--- Integrated Market Sentiment Test (Federal Reserve) ---")
+        fed_label, fed_score, _ = get_market_sentiment("Federal Reserve", days_ago=3)
+        print(f"  Federal Reserve Market Sentiment: Label={fed_label}, Avg Score={fed_score:.3f}") 
