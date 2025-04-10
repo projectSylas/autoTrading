@@ -1,0 +1,69 @@
+name: auto_trader
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15 # Use a specific version
+    container_name: auto_trader_db
+    environment:
+      POSTGRES_USER: ${DB_USER:-trading_user} # Use environment variables or defaults
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-trading_password}
+      POSTGRES_DB: ${DB_NAME:-trading_db}
+    volumes:
+      - auto_trader_postgres_data:/var/lib/postgresql/data # Persist data
+    ports:
+      - "5433:5432" # Expose port only if needed externally, often not needed
+    networks:
+      - auto_trader_network
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ..  # Build context is the parent directory (project root)
+      dockerfile: docker/Dockerfile # Specify the Dockerfile location relative to the context
+    container_name: auto_trader_app
+    depends_on:
+      - db
+    environment:
+      # Pass database connection details to the app
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-trading_user}
+      DB_PASSWORD: ${DB_PASSWORD:-trading_password}
+      DB_NAME: ${DB_NAME:-trading_db}
+      # Pass other necessary env vars from host or .env file
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
+      ALPACA_PAPER: ${ALPACA_PAPER}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL}
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_SECRET_KEY: ${BINANCE_SECRET_KEY}
+      NEWS_API_KEY: ${NEWS_API_KEY}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      CORE_ASSETS: ${CORE_ASSETS}
+      CORE_REBALANCE_THRESHOLD: ${CORE_REBALANCE_THRESHOLD}
+      CORE_RSI_THRESHOLD: ${CORE_RSI_THRESHOLD}
+      CORE_VIX_THRESHOLD: ${CORE_VIX_THRESHOLD}
+      CHALLENGE_SYMBOL: ${CHALLENGE_SYMBOL}
+      CHALLENGE_LEVERAGE: ${CHALLENGE_LEVERAGE}
+      CHALLENGE_TP_RATIO: ${CHALLENGE_TP_RATIO}
+      CHALLENGE_SL_RATIO: ${CHALLENGE_SL_RATIO}
+      CHALLENGE_SMA_PERIOD: ${CHALLENGE_SMA_PERIOD}
+      CHALLENGE_SEED_PERCENTAGE: ${CHALLENGE_SEED_PERCENTAGE}
+      VOLATILITY_THRESHOLD: ${VOLATILITY_THRESHOLD}
+      PYTHONUNBUFFERED: 1 # Ensure print statements appear in logs
+    volumes:
+      - ../:/app # Mount the project root to /app in the container
+      # - ../logs:/app/logs # Mount logs directory if file logging is still used
+    working_dir: /app
+    command: ["python", "-m", "src.main"] # Use -m to run as a module
+    networks:
+      - auto_trader_network
+    restart: unless-stopped
+
+volumes:
+  auto_trader_postgres_data:
+
+networks:
+  auto_trader_network:
+    driver: bridge 

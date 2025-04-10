@@ -6,18 +6,21 @@ from datetime import datetime, date, timedelta # 월 1회 리밸런싱 체크용
 import time
 import yfinance as yf
 
-# strategy_utils 및 notifier 임포트
-import strategy_utils
-import notifier
+# strategy_utils 및 notifier 임포트 (새로운 경로)
+# import strategy_utils -> from src.utils import common as strategy_utils
+from src.utils import common as strategy_utils
+# import notifier -> from src.utils import notifier
+from src.utils import notifier
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# config 모듈에서 설정값 로드 (config.py가 같은 디렉토리에 있다고 가정)
+# config 모듈에서 설정값 로드 (새로운 경로)
 try:
-    import config
+    # import config -> from src.config import settings as config
+    from src.config import settings as config
 except ImportError:
-    logging.error("config.py 파일을 찾을 수 없습니다. API 키 및 설정을 확인하세요.")
+    logging.error("src.config.settings 모듈을 찾을 수 없습니다. API 키 및 설정을 확인하세요.")
     raise
 
 # --- Alpaca API 클라이언트 초기화 ---
@@ -315,23 +318,22 @@ def execute_rebalance(target_allocations: dict):
          logging.info("리밸런싱 주문 제출 내역 없음.") # 모두 금액 작아서 건너뛴 경우 등
 
 def log_transaction(symbol: str, side: str, amount_usd: float, order_id: str, status: str):
-    """거래 내역을 CSV 파일에 기록합니다."""
+    """거래 내역을 데이터베이스에 기록합니다."""
     try:
-        log_entry = pd.DataFrame({
-            'timestamp': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")], # ISO 형식으로 저장
-            'symbol': [symbol],
-            'side': [side],
-            'amount_usd': [round(amount_usd, 2)],
-            'order_id': [order_id],
-            'status': [status] # 주문 상태 (submitted, filled, canceled, rejected 등)
-        })
-        # 파일이 없으면 헤더와 함께 새로 쓰고, 있으면 이어서 쓴다
-        log_file = config.LOG_CORE_FILE
-        header = not os.path.exists(log_file)
-        log_entry.to_csv(log_file, mode='a', header=header, index=False)
-        logging.info(f"거래 로그 기록: {symbol} {side} ${amount_usd:.2f}, ID: {order_id}, 상태: {status}")
+        from src.utils.database import log_trade_to_db # Import DB logging function
+        log_trade_to_db(
+            strategy='core',
+            symbol=symbol,
+            side=side,
+            amount_usd=round(amount_usd, 2),
+            order_id=order_id,
+            status=status
+        )
+        logging.info(f"[DB] Core 거래 로그 기록: {symbol} {side} ${amount_usd:.2f}, ID: {order_id}, 상태: {status}")
+    except ImportError:
+        logging.error("Database logging module (src.utils.database) not found.")
     except Exception as e:
-        logging.error(f"거래 로그 기록 실패: {e}")
+        logging.error(f"Core 거래 로그 DB 기록 실패: {e}")
 
 # --- 월 1회 실행 여부 체크 함수 ---
 def is_first_run_of_month() -> bool:

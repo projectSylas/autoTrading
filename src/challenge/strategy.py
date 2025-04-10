@@ -5,13 +5,16 @@ import os
 import time # 포지션 관리 루프용
 import math
 
-# config, strategy_utils, notifier 모듈 로드
+# config, strategy_utils, notifier 모듈 로드 (새로운 경로)
 try:
-    import config
-    import strategy_utils
-    import notifier
+    # import config -> from src.config import settings as config
+    from src.config import settings as config
+    # import strategy_utils -> from src.utils import common as strategy_utils
+    from src.utils import common as strategy_utils
+    # import notifier -> from src.utils import notifier
+    from src.utils import notifier
 except ImportError as e:
-    logging.error(f"필수 모듈(config, strategy_utils, notifier) 로드 실패: {e}")
+    logging.error(f"필수 모듈(src.config.settings, src.utils.common, src.utils.notifier) 로드 실패: {e}")
     raise
 
 # --- MEXC/Binance API 클라이언트 초기화 (placeholder) ---
@@ -225,26 +228,29 @@ def log_challenge_trade(
     exit_price: float | None = None, pnl_percent: float | None = None,
     status: str = 'open', reason: str | None = None
 ):
-    """챌린지 전략의 상세 거래 내역을 CSV 파일에 기록합니다."""
+    """챌린지 전략의 상세 거래 내역을 데이터베이스에 기록합니다."""
     try:
-        log_entry = {
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'symbol': symbol,
-            'side': side, # 'buy' or 'sell'
-            'quantity': quantity,
-            'entry_price': entry_price,
-            'exit_price': exit_price if exit_price is not None else 'N/A',
-            'pnl_percent': f"{pnl_percent*100:.2f}%" if pnl_percent is not None else 'N/A',
-            'status': status, # 'open', 'closed_tp', 'closed_sl', 'closed_manual', 'error'
-            'reason': reason if reason else 'N/A' # 진입/청산 사유
-        }
-        df_entry = pd.DataFrame([log_entry])
-        log_file = config.LOG_CHALLENGE_FILE
-        header = not os.path.exists(log_file) or os.path.getsize(log_file) == 0
-        df_entry.to_csv(log_file, mode='a', header=header, index=False)
-        logging.info(f"챌린지 거래 로그 기록: {log_entry}")
+        from src.utils.database import log_trade_to_db # Import DB logging function
+        # DB 스키마에 맞게 pnl_percent 포맷 조정 (숫자형)
+        pnl_percent_numeric = pnl_percent if pnl_percent is not None else None
+
+        log_trade_to_db(
+            strategy='challenge',
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            pnl_percent=pnl_percent_numeric,
+            status=status,
+            reason=reason
+            # order_id 는 필요 시 추가 (create_futures_order 등에서 반환값 받아 전달)
+        )
+        logging.info(f"[DB] Challenge 거래 로그 기록: {symbol} {side} Qty:{quantity} Status:{status}")
+    except ImportError:
+        logging.error("Database logging module (src.utils.database) not found.")
     except Exception as e:
-        logging.error(f"챌린지 거래 로그 기록 실패: {e}")
+        logging.error(f"Challenge 거래 로그 DB 기록 실패: {e}")
 
 
 # --- 메인 실행 로직 ---

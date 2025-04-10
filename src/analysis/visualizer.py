@@ -8,39 +8,32 @@ import os
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# config 모듈 로드 (로그 파일 경로)
+# config 모듈 로드 (새로운 경로) 및 로그 파일 경로 설정
 try:
-    import config
+    # import config -> from src.config import settings as config
+    from src.config import settings as config
 except ImportError:
-    logging.error("config.py 파일을 찾을 수 없습니다. 로그 파일 경로를 알 수 없습니다.")
-    # 기본값 설정 또는 에러 발생
+    logging.error("src.config.settings 모듈을 찾을 수 없습니다. 로그 파일 경로를 알 수 없습니다.")
     config = None
-    LOG_CORE_FILE = "log_core.csv"
-    LOG_CHALLENGE_FILE = "log_challenge.csv"
+    # 로그 파일 기본 경로 수정 (루트의 logs/ 디렉토리)
+    LOG_CORE_FILE = os.path.join("logs", "core.csv")
+    LOG_CHALLENGE_FILE = os.path.join("logs", "challenge.csv")
 else:
-    LOG_CORE_FILE = config.LOG_CORE_FILE
-    LOG_CHALLENGE_FILE = config.LOG_CHALLENGE_FILE
+    # restructure.sh 에 따른 로그 파일 경로 수정
+    LOG_CORE_FILE = os.path.join("logs", "core.csv")
+    LOG_CHALLENGE_FILE = os.path.join("logs", "challenge.csv")
+    # config에 로그 경로 변수가 정의되어 있다면 해당 값을 사용 (선택적)
+    # 예: LOG_CORE_FILE = config.LOG_CORE_FILE_PATH if hasattr(config, 'LOG_CORE_FILE_PATH') else LOG_CORE_FILE
 
 # Plotly 기본 템플릿 설정 (선택 사항)
 pio.templates.default = "plotly_white"
 
-
-def load_log_data(log_file: str) -> pd.DataFrame:
-    """CSV 로그 파일을 읽어 DataFrame으로 반환합니다."""
-    if not os.path.exists(log_file):
-        logging.warning(f"로그 파일 없음: {log_file}")
-        return pd.DataFrame()
-    try:
-        df = pd.read_csv(log_file)
-        # timestamp 컬럼을 datetime 객체로 변환 (오류 발생 시 무시)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-        df = df.dropna(subset=['timestamp']) # timestamp 변환 실패한 행 제거
-        df = df.sort_values(by='timestamp').reset_index(drop=True)
-        logging.info(f"{log_file} 로그 데이터 로드 완료 ({len(df)} 행)")
-        return df
-    except Exception as e:
-        logging.error(f"{log_file} 로그 파일 로드 중 오류: {e}")
-        return pd.DataFrame()
+# DB 유틸리티 임포트
+try:
+    from src.utils.database import get_log_data
+except ImportError:
+     logging.error("src.utils.database 모듈 로드 실패. 시각화 생성 불가.")
+     get_log_data = None
 
 def plot_core_summary(df: pd.DataFrame):
     """안정형 포트폴리오 로그 요약 및 시각화 (Matplotlib 예시)."""
@@ -145,17 +138,34 @@ def plot_challenge_summary(df: pd.DataFrame):
             logging.error(f"Challenge 누적 수익률 차트 생성 중 오류: {e}")
 
 # --- 메인 실행 로직 --- 
-def run_visualizer():
-    """로그 데이터를 로드하고 시각화를 생성합니다."""
-    logging.info("===== 📊 시각화 시작 =====")
+def run_visualizer(days: int = 30):
+    """데이터베이스에서 로그 데이터를 로드하고 시각화를 생성합니다.
+
+    Args:
+        days (int): 조회할 최근 일수.
+    """
+    logging.info(f"===== 📊 시각화 시작 (최근 {days}일 데이터) =====")
+    if not get_log_data:
+        logging.error("데이터베이스 모듈 로드 실패로 시각화를 중단합니다.")
+        return
 
     # 안정형 포트폴리오 시각화
-    df_core = load_log_data(LOG_CORE_FILE)
-    plot_core_summary(df_core)
+    # df_core = load_log_data(LOG_CORE_FILE)
+    try:
+        # get_log_data 함수에 필터 기능 추가 필요 가정 (예: WHERE절 추가)
+        # 실제 구현 시 database.py의 get_log_data 수정 필요
+        df_core = get_log_data('trades', days=days, query_filter="strategy = 'core'")
+        plot_core_summary(df_core)
+    except Exception as e:
+        logging.error(f"Core 시각화 데이터 로드 또는 처리 중 오류: {e}")
 
     # 챌린지 전략 시각화
-    df_challenge = load_log_data(LOG_CHALLENGE_FILE)
-    plot_challenge_summary(df_challenge)
+    # df_challenge = load_log_data(LOG_CHALLENGE_FILE)
+    try:
+        df_challenge = get_log_data('trades', days=days, query_filter="strategy = 'challenge'")
+        plot_challenge_summary(df_challenge)
+    except Exception as e:
+        logging.error(f"Challenge 시각화 데이터 로드 또는 처리 중 오류: {e}")
 
     logging.info("===== 📊 시각화 종료 =====")
 

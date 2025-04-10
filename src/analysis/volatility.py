@@ -109,7 +109,7 @@ def detect_anomaly(
     actual_df: pd.DataFrame,
     price_col: str = 'Close',
     threshold_percent: float = 10.0 # 이상 감지 임계값 (%)
-) -> tuple[bool, float, pd.Timestamp | None]:
+) -> tuple[bool, float, pd.Timestamp | None, float | None, float | None]:
     """예측값과 실제값의 괴리율을 계산하여 이상 현상을 감지합니다.
 
     Args:
@@ -119,12 +119,12 @@ def detect_anomaly(
         threshold_percent (float): 이상 현상으로 판단할 괴리율 임계값 (%).
 
     Returns:
-        tuple[bool, float, pd.Timestamp | None]: (이상 현상 여부, 현재 괴리율, 해당 시점)
-                                                  오류 시 (False, 0.0, None) 반환.
+        tuple[bool, float, pd.Timestamp | None, float | None, float | None]: (이상 현상 여부, 현재 괴리율, 해당 시점, 실제 가격, 예측 가격)
+                                                  오류 시 (False, 0.0, None, None, None) 반환.
     """
     if forecast is None or forecast.empty or actual_df is None or actual_df.empty or price_col not in actual_df.columns:
         logging.warning("이상 감지 불가: 예측 또는 실제 데이터 없음.")
-        return False, 0.0, None
+        return False, 0.0, None, None, None
 
     try:
         # 가장 최근 실제 데이터 시점 및 가격 확인
@@ -137,7 +137,7 @@ def detect_anomaly(
 
         if latest_forecast_row.empty:
             logging.warning(f"이상 감지 불가: {latest_actual_time} 에 해당하는 예측값 없음.")
-            return False, 0.0, None
+            return False, 0.0, None, None, None
 
         latest_predicted_price = latest_forecast_row['yhat'].iloc[0]
         yhat_lower = latest_forecast_row['yhat_lower'].iloc[0]
@@ -165,24 +165,32 @@ def detect_anomaly(
                           f"예측가: {latest_predicted_price:.2f} ({yhat_lower:.2f}~{yhat_upper:.2f})\n" \
                           f"괴리율: {deviation_percent:.2f}% (임계값: {threshold_percent}%) {direction}"
                 notifier.send_slack_notification(message)
-            return True, deviation_percent, latest_actual_time
+            return True, deviation_percent, latest_actual_time, latest_actual_price, latest_predicted_price
         else:
             logging.info("정상 범위 내 변동성.")
-            return False, deviation_percent, latest_actual_time
+            return False, deviation_percent, latest_actual_time, latest_actual_price, latest_predicted_price
 
     except IndexError:
          logging.error("이상 감지 중 오류: 실제 데이터 또는 예측 데이터 접근 오류 (IndexError)")
-         return False, 0.0, None
+         return False, 0.0, None, None, None
     except Exception as e:
         logging.error(f"이상 감지 중 오류 발생: {e}", exc_info=True)
-        return False, 0.0, None
+        return False, 0.0, None, None, None
 
 # --- 메인 함수 (실행 예시) --- 
 def run_volatility_check(symbol: str, history_days: int = 90, forecast_hours: int = 24, interval: str = '1h', threshold: float = 10.0):
-    """특정 심볼의 가격 데이터를 가져와 변동성 이상을 체크합니다."""
+    """특정 심볼의 가격 데이터를 가져와 변동성 이상을 체크하고 DB에 로그를 기록합니다."""
+    # DB 로깅 함수 임포트
+    log_volatility_to_db_func = None
+    try:
+        from src.utils.database import log_volatility_to_db as log_volatility_to_db_func
+    except ImportError:
+        logging.warning("Database logging function (log_volatility_to_db) not found. DB logging disabled.")
+
     logging.info(f"===== 📈 {symbol} 변동성 체크 시작 =====")
 
     # 1. 데이터 로드 (strategy_utils 또는 직접 yfinance 사용)
+    df_raw = None
     if strategy_utils:
         df_raw = strategy_utils.get_historical_data(symbol, period=f"{history_days}d", interval=interval)
     else:
@@ -200,8 +208,11 @@ def run_volatility_check(symbol: str, history_days: int = 90, forecast_hours: in
               logging.error(f"{symbol} 데이터 직접 로드 중 오류: {e}")
               df_raw = pd.DataFrame()
 
-    if df_raw.empty:
+    if df_raw is None or df_raw.empty:
         logging.error(f"{symbol} 데이터 로드 실패. 변동성 체크 중단.")
+        # DB 로그 (선택 사항: 데이터 로드 실패 기록)
+        # if log_volatility_to_db_func:
+        #     log_volatility_to_db_func(symbol=symbol, is_anomaly=None, reason="Data load failed")
         logging.info(f"===== 📈 {symbol} 변동성 체크 종료 =====")
         return
 
@@ -220,7 +231,24 @@ def run_volatility_check(symbol: str, history_days: int = 90, forecast_hours: in
         return
 
     # 4. 이상 감지
-    detect_anomaly(forecast_result, df_raw, price_col='Close', threshold_percent=threshold)
+    is_anomaly, deviation, check_time, actual_price, predicted_price = detect_anomaly(
+        forecast_result, df_raw, price_col='Close', threshold_percent=threshold
+    )
+
+    # 5. DB 로그 기록
+    if log_volatility_to_db_func and check_time is not None:
+        try:
+            log_volatility_to_db_func(
+                symbol=symbol,
+                check_time=check_time,
+                is_anomaly=is_anomaly,
+                actual_price=actual_price,
+                predicted_price=predicted_price,
+                deviation_percent=deviation
+            )
+            logging.info(f"[DB] Volatility log saved for {symbol}.")
+        except Exception as db_err:
+            logging.error(f"Volatility DB logging failed for {symbol}: {db_err}")
 
     # TODO: 예측 결과 시각화 (선택 사항)
     # try:

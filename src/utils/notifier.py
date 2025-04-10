@@ -2,7 +2,7 @@ import requests
 import json
 import logging
 import pandas as pd # 결과 DataFrame을 테이블 형태로 보내기 위해
-from config import SLACK_WEBHOOK_URL
+from src.config.settings import SLACK_WEBHOOK_URL
 from datetime import datetime
 
 # 로깅 설정

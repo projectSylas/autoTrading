@@ -25,19 +25,47 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 CORE_ASSETS = os.getenv("CORE_ASSETS", "SPY,QQQ,GLD,SGOV,XLP").split(',')
 CORE_REBALANCE_THRESHOLD = float(os.getenv("CORE_REBALANCE_THRESHOLD", "0.15"))
 
+# --- Challenge Strategy Settings ---
+CHALLENGE_SYMBOLS = os.getenv("CHALLENGE_SYMBOLS", "BTC-USD,ETH-USD").split(',')
 CHALLENGE_SYMBOL = os.getenv("CHALLENGE_SYMBOL", "BTCUSDT")
 CHALLENGE_LEVERAGE = int(os.getenv("CHALLENGE_LEVERAGE", "10"))
+CHALLENGE_SEED_PERCENTAGE = float(os.getenv("CHALLENGE_SEED_PERCENTAGE", "0.05"))
 CHALLENGE_TP_RATIO = float(os.getenv("CHALLENGE_TP_RATIO", "0.10"))
 CHALLENGE_SL_RATIO = float(os.getenv("CHALLENGE_SL_RATIO", "0.05"))
+CHALLENGE_SMA_PERIOD = int(os.getenv("CHALLENGE_SMA_PERIOD", "7"))
 
+# --- Volatility Alert Settings ---
+ENABLE_VOLATILITY = os.getenv("ENABLE_VOLATILITY", "True").lower() == 'true'
 VOLATILITY_THRESHOLD = float(os.getenv("VOLATILITY_THRESHOLD", "5.0"))
+
+# --- AI Model Settings ---
+# Price Predictor
+PREDICTOR_SYMBOL = os.getenv("PREDICTOR_SYMBOL", "BTCUSDT")
+PREDICTOR_INPUT_SEQ_LEN = int(os.getenv("PREDICTOR_INPUT_SEQ_LEN", "60"))
+PREDICTOR_OUTPUT_SEQ_LEN = int(os.getenv("PREDICTOR_OUTPUT_SEQ_LEN", "3"))
+PREDICTOR_HIDDEN_DIM = int(os.getenv("PREDICTOR_HIDDEN_DIM", "64"))
+PREDICTOR_NUM_LAYERS = int(os.getenv("PREDICTOR_NUM_LAYERS", "2"))
+PREDICTOR_DROPOUT = float(os.getenv("PREDICTOR_DROPOUT", "0.2"))
+PREDICTOR_LR = float(os.getenv("PREDICTOR_LR", "0.001"))
+PREDICTOR_EPOCHS = int(os.getenv("PREDICTOR_EPOCHS", "50"))
+PREDICTOR_BATCH_SIZE = int(os.getenv("PREDICTOR_BATCH_SIZE", "32"))
+PREDICTOR_MODEL_TYPE = os.getenv("PREDICTOR_MODEL_TYPE", "LSTM").upper()
+PREDICTOR_MODEL_PATH = os.path.join("model_weights", f"{PREDICTOR_MODEL_TYPE.lower()}_predictor.pth")
+
+# Reinforcement Learning
+RL_ENV_SYMBOL = os.getenv("RL_ENV_SYMBOL", "BTCUSDT")
+RL_TRAIN_TIMESTEPS = int(os.getenv("RL_TRAIN_TIMESTEPS", "100000"))
+RL_ALGORITHM = os.getenv("RL_ALGORITHM", "PPO").upper()
+RL_POLICY = os.getenv("RL_POLICY", "MlpPolicy")
+RL_LEARNING_RATE = float(os.getenv("RL_LEARNING_RATE", "0.0003"))
+RL_BATCH_SIZE = int(os.getenv("RL_BATCH_SIZE", "64"))
+RL_MODEL_PATH = os.path.join("model_weights", f"{RL_ALGORITHM.lower()}_trading_model.zip")
+RL_NORMALIZATION_REFERENCE_PRICE = float(os.getenv("RL_NORMALIZATION_REFERENCE_PRICE", "0.0"))
 
 # --- Module Execution Flags ---
 # .env 파일에 없으면 기본값 True 사용
 ENABLE_BACKTEST = os.getenv("ENABLE_BACKTEST", "True").lower() == 'true'
 ENABLE_SENTIMENT = os.getenv("ENABLE_SENTIMENT", "True").lower() == 'true'
-ENABLE_VOLATILITY = os.getenv("ENABLE_VOLATILITY", "True").lower() == 'true'
-
 
 # --- Environment Variable Check ---
 def check_env_vars():
@@ -68,6 +96,17 @@ def check_env_vars():
     # 그러나 Slack 알림은 필요할 수 있음
     if ENABLE_VOLATILITY and not os.getenv("SLACK_WEBHOOK_URL"):
          warnings.append("Volatility Alert 실행 시 Slack 알림에 필요한 SLACK_WEBHOOK_URL 환경 변수가 누락되었습니다.")
+
+    # --- Added: Check for RL Reference Price ---
+    # Check if RL is being used (e.g., based on a flag or existence of RL settings)
+    # For simplicity, we check if the model path likely exists based on algorithm setting.
+    potential_rl_usage = bool(RL_ALGORITHM and RL_POLICY)
+    if potential_rl_usage and RL_NORMALIZATION_REFERENCE_PRICE <= 0.0:
+         warnings.append(
+             f"RL 전략 사용 가능성이 있으나 정규화 기준 가격(RL_NORMALIZATION_REFERENCE_PRICE)이 .env에 설정되지 않았거나 유효하지 않습니다 ({RL_NORMALIZATION_REFERENCE_PRICE}). "
+             f"RL 에이전트가 올바르게 작동하지 않을 수 있습니다. 모델 훈련 후 해당 값을 .env에 설정하세요."
+         )
+    # --- End Added ---
 
     if warnings:
         logging.warning("환경 변수 설정 경고:")

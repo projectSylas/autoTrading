@@ -13,19 +13,39 @@ def get_historical_data(symbol: str, period: str = "1mo", interval: str = "1d") 
     """yfinance를 사용하여 지정된 종목의 과거 데이터를 가져옵니다."""
     try:
         ticker = yf.Ticker(symbol)
-        # 데이터 로드 시 auto_adjust=True 사용 고려 (수정 종가 기준)
-        hist = ticker.history(period=period, interval=interval, auto_adjust=False) # auto_adjust=False로 OHLC 유지
+        hist = ticker.history(period=period, interval=interval, auto_adjust=False)
         if hist.empty:
             logging.warning(f"{symbol}: yfinance에서 과거 데이터를 가져올 수 없습니다. (기간: {period}, 간격: {interval})")
-            return pd.DataFrame() # 빈 DataFrame 반환
-        # 타임존 정보 제거 (호환성 문제 방지)
-        if isinstance(hist.index, pd.DatetimeIndex):
-             hist.index = hist.index.tz_localize(None)
-        logging.info(f"{symbol}: yfinance 과거 데이터 로드 완료 ({len(hist)} 행)")
-        return hist
+            return pd.DataFrame()
+
+        # Select necessary columns and explicitly create a copy
+        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        # Ensure 'Open time' is handled correctly (it's usually the index after history call)
+        if not all(col in hist.columns for col in required_cols):
+            logging.warning(f"{symbol}: yfinance 데이터에 필요한 컬럼({required_cols})이 모두 존재하지 않습니다.")
+            # Attempt to return at least the available required columns
+            available_cols = [col for col in required_cols if col in hist.columns]
+            if not available_cols:
+                 return pd.DataFrame()
+            df = hist[available_cols].copy() # Copy available required columns
+        else:
+             # Select required columns and create a copy
+             df = hist[required_cols].copy()
+
+        # Convert index if it's timezone-aware
+        if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
+        # Convert columns to numeric (already done by yfinance? Double check)
+        # Redundant if auto_adjust=False returns numeric types correctly
+        # for col in df.columns:
+        #     df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        logging.info(f"{symbol}: yfinance 과거 데이터 로드 및 처리 완료 ({len(df)} 행)")
+        return df
     except Exception as e:
         logging.error(f"{symbol} 과거 데이터 조회 중 오류 발생: {e}")
-        return pd.DataFrame() # 오류 시 빈 DataFrame 반환
+        return pd.DataFrame()
 
 def get_current_vix(period: str = "5d") -> float | None:
     """VIX 지수(^VIX)의 현재 값을 가져옵니다."""

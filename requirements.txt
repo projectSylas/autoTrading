@@ -1,0 +1,19 @@
+pandas>=1.5.0
+numpy>=1.20.0
+psycopg2-binary>=2.9.0 # For PostgreSQL connection 
+schedule>=1.0.0 # For scheduling jobs in main.py
+# Add other core dependencies below if needed
+python-dotenv>=0.20.0 # For loading .env files
+requests>=2.28.0 # For Slack notifications etc.
+yfinance>=0.2.0 # For fetching market data
+alpaca-trade-api>=2.0.0 # For Alpaca
+python-binance>=1.0.15 # For Binance
+newsapi-python>=0.2.0 # For NewsAPI 
+# AI/ML Libraries
+torch>=1.10.0
+scikit-learn>=1.0.0 # For data scaling
+# For RL (Choose one or both):
+stable-baselines3[extra]>=2.0.0 # Includes Gym, PettingZoo etc.
+# finrl>=0.3.5 # Optional: For financial specific RL
+gymnasium>=0.28.0 # OpenAI Gym successor, used by SB3
+# gym # Older OpenAI Gym, might be needed by FinRL 

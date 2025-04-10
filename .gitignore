@@ -1,21 +1,47 @@
-# Environments
+# Environment variables
 .env
-.venv/
-venv/
-ENV/
-env/
-env.bak/
-venv.bak/
 
-# Python cache files
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+# Virtual environment
+venv/
+.venv/
+env/
+
 # IDE specific files
 .idea/
 .vscode/
+*.sublime-*
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Logs directory (using database now)
+logs/
+
+# Test reports
+htmlcov/
+.tox/
+.coverage
+.pytest_cache/
+
+# Docker related
+postgres_data/
+# Add other docker related files/folders if needed, e.g., .dockerignore
+
+# Output files (e.g., generated plots)
+*.png
+*.html
 
 # Log files (if not intended to be version controlled)
 *.log
@@ -23,12 +49,3 @@ log_*.csv # 만약 로그 파일을 버전 관리하지 않으려면 추가
 
 # Data files (if large or generated)
 *.csv # 만약 데이터 파일을 버전 관리하지 않으려면 추가 (로그 파일 제외 규칙 필요)
-*.png
-*.html # 백테스트 결과 등
-
-# Poetry lock file (optional, depends on team policy)
-# poetry.lock
-
-# OS specific files
-.DS_Store
-Thumbs.db

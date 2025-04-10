@@ -127,35 +127,61 @@ def analyze_sentiment(texts: list[str]) -> str:
         return "neutral" # 오류 시 중립 반환
 
 # --- 통합 함수 --- 
-def get_market_sentiment(keyword: str, days_ago: int = 1, language: str = 'en') -> str:
-    """특정 키워드 관련 뉴스를 가져와 전반적인 시장 감성을 판단합니다.
+def get_market_sentiment(keyword: str, days_ago: int = 1, language: str = 'en') -> tuple[str, float, pd.DataFrame]:
+    """특정 키워드 관련 뉴스를 가져와 전반적인 시장 감성, 점수, 기사 DataFrame을 반환하고 DB에 로그를 기록합니다.
 
     Returns:
-        str: 'positive', 'negative', 'neutral'
+        tuple[str, float, pd.DataFrame]: (감성 라벨, 평균 점수, 기사 DataFrame)
+                                         오류 시 ('neutral', 0.0, 빈 DataFrame)
     """
+    # DB 로깅 함수 임포트 (실패 시 로깅만 불가능)
+    log_sentiment_to_db_func = None
+    try:
+        from src.utils.database import log_sentiment_to_db as log_sentiment_to_db_func
+    except ImportError:
+        logging.warning("Database logging function (log_sentiment_to_db) not found. DB logging disabled.")
+
     logging.info(f"--- '{keyword}' 시장 감성 분석 시작 --- ")
     articles = fetch_recent_news(keyword, days_ago, language)
+    articles_df = pd.DataFrame(articles) # 결과 반환용
+
     if not articles:
-        logging.warning("분석할 뉴스 없음. 'neutral' 반환.")
-        return "neutral"
+        logging.warning("분석할 뉴스 없음. ('neutral', 0.0) 반환.")
+        # DB 로그 (선택 사항: 분석 대상 없었음 기록)
+        # if log_sentiment_to_db_func:
+        #     log_sentiment_to_db_func(keyword=keyword, sentiment='N/A', score=None, article_count=0)
+        return "neutral", 0.0, pd.DataFrame()
 
     # 분석할 텍스트 선택 (예: 제목 + 설명)
     texts_to_analyze = []
     for article in articles:
         title = article.get('title', '') or ''
         description = article.get('description', '') or ''
-        # 간단히 제목과 설명 합치기 (None 방지)
         text = f"{title}. {description}".strip()
         if text != ".":
             texts_to_analyze.append(text)
 
     if not texts_to_analyze:
-        logging.warning("분석할 텍스트 없음. 'neutral' 반환.")
-        return "neutral"
+        logging.warning("분석할 텍스트 없음. ('neutral', 0.0) 반환.")
+        return "neutral", 0.0, articles_df
 
-    overall_sentiment = analyze_sentiment(texts_to_analyze)
-    logging.info(f"--- '{keyword}' 시장 감성 분석 완료: {overall_sentiment} ---")
-    return overall_sentiment
+    overall_sentiment, avg_score = analyze_sentiment(texts_to_analyze)
+
+    # DB에 로그 기록
+    if log_sentiment_to_db_func:
+        try:
+            log_sentiment_to_db_func(
+                keyword=keyword,
+                sentiment=overall_sentiment,
+                score=avg_score,
+                article_count=len(articles)
+            )
+            logging.info(f"[DB] Sentiment log saved for '{keyword}'.")
+        except Exception as db_err:
+             logging.error(f"Sentiment DB logging failed for '{keyword}': {db_err}")
+
+    logging.info(f"--- '{keyword}' 시장 감성 분석 완료: {overall_sentiment} (Score: {avg_score:.2f}) ---")
+    return overall_sentiment, avg_score, articles_df # 감성, 점수, 기사 DF 반환
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -183,13 +209,13 @@ if __name__ == "__main__":
             "Regulatory concerns cast shadow over crypto market."
         ]
         sentiment_result = analyze_sentiment(test_texts)
-        print(f"  테스트 텍스트 감성 분석 결과: {sentiment_result}")
+        print(f"  테스트 텍스트 감성 분석 결과: Label={sentiment_result}")
 
         # 3. 통합 함수 테스트
         logging.info("\n--- 시장 감성 통합 테스트 (Bitcoin) ---")
-        btc_sentiment = get_market_sentiment("Bitcoin", days_ago=1)
-        print(f"  Bitcoin 최근 뉴스 기반 시장 감성: {btc_sentiment}")
+        btc_sentiment, btc_score, _ = get_market_sentiment("Bitcoin", days_ago=1)
+        print(f"  Bitcoin 최근 뉴스 기반 시장 감성: {btc_sentiment} (Score: {btc_score:.2f})")
 
         logging.info("\n--- 시장 감성 통합 테스트 (Federal Reserve) ---")
-        fed_sentiment = get_market_sentiment("Federal Reserve", days_ago=3)
-        print(f"  Federal Reserve 최근 뉴스 기반 시장 감성: {fed_sentiment}") 
+        fed_sentiment, fed_score, _ = get_market_sentiment("Federal Reserve", days_ago=3)
+        print(f"  Federal Reserve 최근 뉴스 기반 시장 감성: {fed_sentiment} (Score: {fed_score:.2f})") 

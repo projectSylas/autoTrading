@@ -1,100 +1,104 @@
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
+import os # 로그 파일 경로 지정을 위해 추가
 
-# 설정 및 알림 모듈 임포트
-import config
+# 설정 및 알림 모듈 임포트 (새로운 경로)
+# import config -> from src.config import settings as config
+from src.config import settings as config
 try:
-    from notifier import send_slack_notification, create_slack_block, format_dataframe_for_slack
+    # from notifier import ... -> from src.utils.notifier import ...
+    from src.utils.notifier import send_slack_notification, create_slack_block, format_dataframe_for_slack
 except ImportError:
-    logging.error("notifier.py 로드 실패. 리포트 전송 불가.")
+    logging.error("src.utils.notifier 로드 실패. 리포트 전송 불가.")
     send_slack_notification = None
     create_slack_block = None
     format_dataframe_for_slack = None
 
-# 로그 파일 경로 (main.py와 동일하게 참조)
-from main import LOG_BACKTEST_FILE, LOG_SENTIMENT_FILE, LOG_VOLATILITY_FILE
+# DB 유틸리티 임포트
+try:
+    from src.utils.database import get_log_data
+except ImportError:
+     logging.error("src.utils.database 모듈 로드 실패. 리포트 생성 불가.")
+     get_log_data = None
+
+# 로그 파일 경로 직접 정의 (루트의 logs/ 디렉토리 기준)
+# from main import LOG_BACKTEST_FILE, LOG_SENTIMENT_FILE, LOG_VOLATILITY_FILE -> 삭제
+LOG_DIR = "logs" # 로그 디렉토리
+LOG_BACKTEST_FILE = os.path.join(LOG_DIR, "backtest.csv")
+LOG_SENTIMENT_FILE = os.path.join(LOG_DIR, "sentiment.csv")
+LOG_VOLATILITY_FILE = os.path.join(LOG_DIR, "volatility.csv")
+# restructure.sh 에서 로그 파일 이름도 변경됨 (log_*.csv -> *.csv)
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def load_latest_log(log_file: str, days: int = 1) -> pd.DataFrame:
-    """지정된 CSV 로그 파일에서 최근 N일치 데이터를 로드합니다."""
-    try:
-        df = pd.read_csv(log_file, parse_dates=['timestamp'], encoding='utf-8-sig')
-        cutoff_date = datetime.now() - timedelta(days=days)
-        # timestamp 컬럼 기준으로 필터링
-        latest_df = df[df['timestamp'] >= cutoff_date]
-        logging.info(f"로그 로드 완료: {log_file} (최근 {days}일, {len(latest_df)} 행)")
-        return latest_df
-    except FileNotFoundError:
-        logging.warning(f"로그 파일 없음: {log_file}")
-        return pd.DataFrame()
-    except Exception as e:
-        logging.error(f"로그 파일 '{log_file}' 로드 중 오류: {e}")
-        return pd.DataFrame()
-
 def generate_report_blocks() -> list:
-    """각 로그 파일을 읽어 Slack Block Kit 형식의 리포트 블록 리스트를 생성합니다."""
+    """데이터베이스에서 로그를 읽어 Slack Block Kit 형식의 리포트 블록 리스트를 생성합니다."""
+    if not get_log_data:
+        return [create_slack_block("리포트 생성 오류", "데이터베이스 모듈 로드 실패")]
+
     report_blocks = []
     today_str = datetime.now().strftime("%Y-%m-%d")
+    days_to_report = 1 # 최근 1일 데이터 기준
 
-    # --- 1. 백테스트 결과 요약 --- #
-    if config.ENABLE_BACKTEST:
-        # 백테스트 로그는 보통 전체 결과가 저장되므로, 최근 실행 기준으로 로드
-        # 여기서는 간단히 파일 존재 여부 및 내용 일부 표시 예시
-        try:
-            # 백테스트는 보통 실행 시점에 결과를 저장하므로, 파일 존재 유무나 마지막 수정 시간 등으로 판단
-            # 여기서는 main.py에서 analysis_results를 저장하는 방식으로 변경해야 더 유용
-            # 지금은 파일 로드 예시만 보여줌
-            df_backtest = pd.read_csv(LOG_BACKTEST_FILE, encoding='utf-8-sig')
-            if not df_backtest.empty:
-                # 마지막 행(가장 최근 결과)을 요약으로 사용하거나, 특정 컬럼 값 표시
-                # 예시: 마지막 행의 주요 지표 표시
-                latest_result = df_backtest.iloc[-1].to_dict()
-                summary = "\n".join([f"- {k}: {v}" for k, v in latest_result.items() if k != 'timestamp']) # timestamp 제외
-                report_blocks.append(create_slack_block(f"📊 백테스트 결과 ({today_str})", summary))
-            else:
-                report_blocks.append(create_slack_block(f"📊 백테스트 결과 ({today_str})", "실행 기록 없음 또는 결과 비어있음."))
-        except FileNotFoundError:
-             report_blocks.append(create_slack_block(f"📊 백테스트 결과 ({today_str})", "로그 파일 없음."))
-        except Exception as e:
-             report_blocks.append(create_slack_block(f"📊 백테스트 결과 ({today_str})", f"로그 로드 오류: {e}"))
-        report_blocks.append({"type": "divider"})
+    # --- 1. 거래 요약 (Core + Challenge) --- #
+    try:
+        # 최근 1일 거래 내역 조회 (최대 10건)
+        df_trades = get_log_data('trades', days=days_to_report, limit=10)
+        if not df_trades.empty and format_dataframe_for_slack:
+            # 필요한 컬럼만 선택하여 표시 (예시)
+            trade_summary = format_dataframe_for_slack(
+                df_trades[['timestamp', 'strategy', 'symbol', 'side', 'status', 'pnl_percent']].sort_values('timestamp')
+            )
+            report_blocks.append(create_slack_block(f"📊 최근 거래 요약 ({today_str})", trade_summary))
+        else:
+            report_blocks.append(create_slack_block(f"📊 최근 거래 요약 ({today_str})", f"최근 {days_to_report}일 데이터 없음."))
+    except Exception as e:
+         report_blocks.append(create_slack_block(f"📊 최근 거래 요약 ({today_str})", f"데이터 조회 오류: {e}"))
+    report_blocks.append({"type": "divider"})
+
 
     # --- 2. 시장 감성 분석 요약 --- #
     if config.ENABLE_SENTIMENT:
-        df_sentiment = load_latest_log(LOG_SENTIMENT_FILE, days=1)
-        if not df_sentiment.empty and format_dataframe_for_slack:
-            sentiment_summary_table = format_dataframe_for_slack(df_sentiment, max_rows=5)
-            report_blocks.append(create_slack_block(f"📰 시장 감성 분석 ({today_str})", sentiment_summary_table))
-            # 부정적 감성 하이라이트
-            if 'negative' in df_sentiment['sentiment'].unique():
-                report_blocks.append(create_slack_block("주의", "부정적인 시장 감성이 포함되었습니다."))
-        else:
-            report_blocks.append(create_slack_block(f"📰 시장 감성 분석 ({today_str})", "최근 1일 데이터 없음."))
+        try:
+            df_sentiment = get_log_data('sentiment_logs', days=days_to_report, limit=5)
+            if not df_sentiment.empty and format_dataframe_for_slack:
+                sentiment_summary_table = format_dataframe_for_slack(df_sentiment.sort_values('timestamp'))
+                report_blocks.append(create_slack_block(f"📰 시장 감성 분석 ({today_str})", sentiment_summary_table))
+                if 'negative' in df_sentiment['sentiment'].unique():
+                    report_blocks.append(create_slack_block("주의", "부정적인 시장 감성이 포함되었습니다."))
+            else:
+                report_blocks.append(create_slack_block(f"📰 시장 감성 분석 ({today_str})", f"최근 {days_to_report}일 데이터 없음."))
+        except Exception as e:
+             report_blocks.append(create_slack_block(f"📰 시장 감성 분석 ({today_str})", f"데이터 조회 오류: {e}"))
         report_blocks.append({"type": "divider"})
 
     # --- 3. 변동성 감지 요약 --- #
     if config.ENABLE_VOLATILITY:
-        df_volatility = load_latest_log(LOG_VOLATILITY_FILE, days=1)
-        if not df_volatility.empty:
-            # 이상 감지(Anomaly) 결과만 필터링하여 보여주거나, 최근 감지 결과 요약
-            anomalies = df_volatility[df_volatility['is_anomaly'] == True]
-            if not anomalies.empty:
-                 anomaly_summary = format_dataframe_for_slack(anomalies, max_rows=3)
-                 report_blocks.append(create_slack_block(f"📈 변동성 이상 감지 ({today_str})", f"**이상 변동 감지됨:**\n{anomaly_summary}"))
+        try:
+            df_volatility = get_log_data('volatility_logs', days=days_to_report)
+            if not df_volatility.empty:
+                anomalies = df_volatility[df_volatility['is_anomaly'] == True]
+                if not anomalies.empty:
+                     anomaly_summary = format_dataframe_for_slack(anomalies.sort_values('timestamp'), max_rows=3)
+                     report_blocks.append(create_slack_block(f"📈 변동성 이상 감지 ({today_str})", f"**이상 변동 감지됨:**\n{anomaly_summary}"))
+                else:
+                     report_blocks.append(create_slack_block(f"📈 변동성 이상 감지 ({today_str})", f"최근 {days_to_report}일 내 이상 변동 감지 내역 없음."))
             else:
-                 report_blocks.append(create_slack_block(f"📈 변동성 이상 감지 ({today_str})", "최근 1일 내 이상 변동 감지 내역 없음."))
-        else:
-            report_blocks.append(create_slack_block(f"📈 변동성 이상 감지 ({today_str})", "최근 1일 데이터 없음."))
-        # 변동성 로그 형식이 is_anomaly 포함하도록 수정 필요 가정
+                report_blocks.append(create_slack_block(f"📈 변동성 이상 감지 ({today_str})", f"최근 {days_to_report}일 데이터 없음."))
+        except Exception as e:
+             report_blocks.append(create_slack_block(f"📈 변동성 이상 감지 ({today_str})", f"데이터 조회 오류: {e}"))
+
+    # TODO: 백테스트 결과는 별도 테이블에서 가져오도록 수정 필요 (backtest_runner 수정 후)
+    # if config.ENABLE_BACKTEST:
+    #     ...
 
     return report_blocks
 
 def send_summary_report():
-    """로그 파일들을 기반으로 요약 리포트를 생성하고 Slack으로 전송합니다."""
-    logging.info("--- 📑 자동 요약 리포트 생성 시작 ---")
+    """데이터베이스 로그 기반 요약 리포트를 생성하고 Slack으로 전송합니다."""
+    logging.info("--- 📑 자동 요약 리포트 생성 시작 (DB 기반) ---")
     if not send_slack_notification:
         logging.error("Notifier가 없어 리포트를 전송할 수 없습니다.")
         return
