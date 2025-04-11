@@ -67,27 +67,40 @@ class Settings(BaseSettings):
     CORE_RSI_THRESHOLD: int = int(os.getenv("CORE_RSI_THRESHOLD", "30"))
     CORE_VIX_THRESHOLD: int = int(os.getenv("CORE_VIX_THRESHOLD", "25"))
     CORE_REBALANCE_THRESHOLD: float = float(os.getenv("CORE_REBALANCE_THRESHOLD", "0.15"))
-    CHALLENGE_SYMBOLS: list = os.getenv("CHALLENGE_SYMBOLS", "BTC-USD,ETH-USD").split(',')
-    CHALLENGE_SYMBOL: str = os.getenv("CHALLENGE_SYMBOL", "BTCUSDT")
+    CHALLENGE_SYMBOLS: list = os.getenv("CHALLENGE_SYMBOLS", "BTCUSDT,ETHUSDT").split(',')
     CHALLENGE_LEVERAGE: int = int(os.getenv("CHALLENGE_LEVERAGE", "10"))
     CHALLENGE_SEED_PERCENTAGE: float = float(os.getenv("CHALLENGE_SEED_PERCENTAGE", "0.05"))
     CHALLENGE_TP_RATIO: float = float(os.getenv("CHALLENGE_TP_RATIO", "0.10"))
     CHALLENGE_SL_RATIO: float = float(os.getenv("CHALLENGE_SL_RATIO", "0.05"))
-    CHALLENGE_SMA_PERIOD: int = int(os.getenv("CHALLENGE_SMA_PERIOD", "7"))
+    CHALLENGE_SMA_PERIOD: int = int(os.getenv("CHALLENGE_SMA_PERIOD", "20"))
     CHALLENGE_RSI_PERIOD: int = int(os.getenv("CHALLENGE_RSI_PERIOD", "14"))
-    CHALLENGE_RSI_LOW: int = int(os.getenv("CHALLENGE_RSI_LOW", "30"))
+    CHALLENGE_RSI_THRESHOLD: int = int(os.getenv("CHALLENGE_RSI_THRESHOLD", "30"))
     CHALLENGE_INTERVAL: str = os.getenv("CHALLENGE_INTERVAL", "1h")
-    CHALLENGE_LOOKBACK_PERIOD: str = os.getenv("CHALLENGE_LOOKBACK_PERIOD", "7d")
+    CHALLENGE_LOOKBACK: str = os.getenv("CHALLENGE_LOOKBACK", "30d")
     CHALLENGE_RISK_PER_TRADE: float = float(os.getenv("CHALLENGE_RISK_PER_TRADE", "0.01"))
 
+    # --- Newly Added Challenge Parameters ---
+    CHALLENGE_VOLUME_AVG_PERIOD: int = int(os.getenv("CHALLENGE_VOLUME_AVG_PERIOD", "20"))
+    CHALLENGE_VOLUME_SURGE_RATIO: float = float(os.getenv("CHALLENGE_VOLUME_SURGE_RATIO", "2.0"))
+    CHALLENGE_DIVERGENCE_LOOKBACK: int = int(os.getenv("CHALLENGE_DIVERGENCE_LOOKBACK", "28"))
+    CHALLENGE_BREAKOUT_LOOKBACK: int = int(os.getenv("CHALLENGE_BREAKOUT_LOOKBACK", "40"))
+    CHALLENGE_PULLBACK_LOOKBACK: int = int(os.getenv("CHALLENGE_PULLBACK_LOOKBACK", "10"))
+    CHALLENGE_POC_LOOKBACK: int = int(os.getenv("CHALLENGE_POC_LOOKBACK", "50"))
+    CHALLENGE_POC_THRESHOLD: float = float(os.getenv("CHALLENGE_POC_THRESHOLD", "0.005"))
+    LOG_OVERRIDES_TO_DB: bool = os.getenv("LOG_OVERRIDES_TO_DB", "False").lower() == "true"
+    CHALLENGE_SYMBOL_DELAY_SECONDS: float = float(os.getenv("CHALLENGE_SYMBOL_DELAY_SECONDS", "1.0"))
+
+    # --- Log Level --- 
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
     # --- Volatility Alert Settings ---
-    ENABLE_VOLATILITY: bool = os.getenv("ENABLE_VOLATILITY", "True").lower() == "true"
+    ENABLE_VOLATILITY: bool = os.getenv("ENABLE_VOLATILITY", "False").lower() == "true"
     VOLATILITY_THRESHOLD: float = float(os.getenv("VOLATILITY_THRESHOLD", "5.0"))
 
     # --- Feature Flags ---
-    ENABLE_BACKTEST: bool = os.getenv("ENABLE_BACKTEST", "True").lower() == "true"
+    ENABLE_BACKTEST: bool = os.getenv("ENABLE_BACKTEST", "False").lower() == "true"
     ENABLE_SENTIMENT_ANALYSIS: bool = os.getenv("ENABLE_SENTIMENT_ANALYSIS", "True").lower() == "true"
-    ENABLE_VOLATILITY_ALERT: bool = os.getenv("ENABLE_VOLATILITY_ALERT", "True").lower() == "true"
+    ENABLE_VOLATILITY_ALERT: bool = os.getenv("ENABLE_VOLATILITY_ALERT", "False").lower() == "true"
 
 # 설정 인스턴스 생성 (다른 모듈에서 import하여 사용)
 settings = Settings()

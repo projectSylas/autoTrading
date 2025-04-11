@@ -254,22 +254,57 @@ def check_strategy_conditions(symbol: str, interval: str, lookback_period: str) 
         return decision_info
 
     # --- Calculate Technical Indicators --- #
-    # Use strategy_utils which should contain indicator calculations
     try:
         # Ensure calculation functions handle potential errors and missing columns
         df = strategy_utils.calculate_rsi(df, window=settings.CHALLENGE_RSI_PERIOD)
         df = strategy_utils.calculate_sma(df, window=settings.CHALLENGE_SMA_PERIOD)
+        df = strategy_utils.calculate_sma(df, window=7) # Calculate 7-day SMA specifically
         df = strategy_utils.calculate_bollinger_bands(df, window=20, num_std_dev=2) # Example
-        # Add other indicators as needed from strategy_utils
+
+        # Calculate average volume
+        vol_avg_period = settings.CHALLENGE_VOLUME_AVG_PERIOD
+        df[f'SMA_Volume_{vol_avg_period}'] = df['Volume'].rolling(window=vol_avg_period, min_periods=1).mean()
+
+        # Detect RSI Divergence
+        # Use a reasonable lookback period for divergence detection, e.g., 14 or 28
+        # This might require fetching more data initially if lookback is large
+        divergence_lookback = settings.CHALLENGE_DIVERGENCE_LOOKBACK # Assume this setting exists (e.g., 28)
+        rsi_divergence = strategy_utils.detect_rsi_divergence(df, lookback=divergence_lookback)
+        decision_info['indicators']['rsi_divergence'] = rsi_divergence # Store the result
+
+        # Detect Breakout/Pullback Pattern
+        breakout_lookback = settings.CHALLENGE_BREAKOUT_LOOKBACK # e.g., 40
+        pullback_lookback = settings.CHALLENGE_PULLBACK_LOOKBACK # e.g., 10
+        pullback_signal = strategy_utils.detect_trendline_breakout_pullback(
+            df,
+            lookback_breakout=breakout_lookback,
+            lookback_pullback=pullback_lookback
+        )
+        decision_info['indicators']['pullback_signal'] = pullback_signal
+
+        # Calculate Point of Control (POC) Proxy
+        poc_lookback = settings.CHALLENGE_POC_LOOKBACK # e.g., 50
+        poc_value = strategy_utils.calculate_poc(df, lookback=poc_lookback)
+        decision_info['indicators']['poc'] = poc_value # Store the POC value
 
         # Store latest values
         decision_info['indicators']['rsi'] = df['RSI'].iloc[-1] if 'RSI' in df.columns and not pd.isna(df['RSI'].iloc[-1]) else None
-        decision_info['indicators']['sma'] = df[f'SMA_{settings.CHALLENGE_SMA_PERIOD}'].iloc[-1] if f'SMA_{settings.CHALLENGE_SMA_PERIOD}' in df.columns and not pd.isna(df[f'SMA_{settings.CHALLENGE_SMA_PERIOD}'].iloc[-1]) else None
+        # Store the existing SMA value (e.g., SMA_20)
+        sma_long_period = settings.CHALLENGE_SMA_PERIOD
+        sma_long_col = f'SMA_{sma_long_period}'
+        decision_info['indicators'][sma_long_col] = df[sma_long_col].iloc[-1] if sma_long_col in df.columns and not pd.isna(df[sma_long_col].iloc[-1]) else None
+        # Store the 7-day SMA value
+        sma_7_col = 'SMA_7'
+        decision_info['indicators'][sma_7_col] = df[sma_7_col].iloc[-1] if sma_7_col in df.columns and not pd.isna(df[sma_7_col].iloc[-1]) else None
+        # Store volume indicators
+        vol_avg_col = f'SMA_Volume_{vol_avg_period}'
+        decision_info['indicators']['volume'] = df['Volume'].iloc[-1] if 'Volume' in df.columns and not pd.isna(df['Volume'].iloc[-1]) else None
+        decision_info['indicators']['avg_volume'] = df[vol_avg_col].iloc[-1] if vol_avg_col in df.columns and not pd.isna(df[vol_avg_col].iloc[-1]) else None
+
         decision_info['indicators']['close'] = df['Close'].iloc[-1] if 'Close' in df.columns and not pd.isna(df['Close'].iloc[-1]) else None
         decision_info['price'] = decision_info['indicators']['close'] # Current price
 
-        # Log indicator calculation success
-        logging.debug(f"[{symbol}] Indicators calculated: RSI={decision_info['indicators']['rsi']}, SMA={decision_info['indicators']['sma']}, Close={decision_info['price']}")
+        logging.debug(f"[{symbol}] Indicators calculated: RSI={decision_info['indicators'].get('rsi')}, ..., RSI_Divergence={rsi_divergence}, Pullback_Signal={pullback_signal}, POC={poc_value:.4f if poc_value else 'N/A'}") # Add divergence, pullback, and POC to log
 
     except Exception as e:
         logging.error(f"[{symbol}] Error calculating technical indicators: {e}", exc_info=True)
@@ -278,27 +313,140 @@ def check_strategy_conditions(symbol: str, interval: str, lookback_period: str) 
         return decision_info
 
     # --- Technical Condition Check (Initial Decision) --- #
-    # Placeholder: Replace with your actual technical entry/exit logic based on calculated indicators
+    # Implement 'Flight Challenge' conditions here
     latest_rsi = decision_info['indicators'].get('rsi')
-    latest_sma = decision_info['indicators'].get('sma')
+    latest_sma_long = decision_info['indicators'].get(sma_long_col)
+    latest_sma_7 = decision_info['indicators'].get(sma_7_col)
     latest_close = decision_info['price']
+    latest_volume = decision_info['indicators'].get('volume')
+    avg_volume = decision_info['indicators'].get('avg_volume')
+    rsi_divergence_signal = decision_info['indicators'].get('rsi_divergence')
+    pullback_pattern = decision_info['indicators'].get('pullback_signal')
+    poc = decision_info['indicators'].get('poc')
+    low_col = 'Low' # Assuming Low column name
 
-    # Example Buy Condition (RSI low, above SMA)
-    if latest_rsi is not None and latest_rsi < settings.CHALLENGE_RSI_THRESHOLD and \
-       latest_close is not None and latest_sma is not None and latest_close > latest_sma:
-        decision_info["decision"] = "buy"
-        decision_info["side"] = "buy"
-        decision_info["reason"] = f"Tech Signal: RSI ({latest_rsi:.2f} < {settings.CHALLENGE_RSI_THRESHOLD}) and Close > SMA ({latest_sma:.2f})"
-    # Example Sell/Short Condition (RSI high, below SMA - adjust logic as needed)
+    # Check for volume surge
+    volume_surge_detected = False
+    if latest_volume is not None and avg_volume is not None and avg_volume > 0: # Avoid division by zero
+        surge_ratio = latest_volume / avg_volume
+        if surge_ratio >= settings.CHALLENGE_VOLUME_SURGE_RATIO:
+            volume_surge_detected = True
+            logging.info(f"[{symbol}] Volume Surge Detected: Current={latest_volume:.2f}, Avg({vol_avg_period})={avg_volume:.2f} (Ratio={surge_ratio:.2f} >= {settings.CHALLENGE_VOLUME_SURGE_RATIO})" )
+
+    # Reset default decision/reason before applying rules
+    decision_info["decision"] = "hold"
+    decision_info["reason"] = "No strong technical signal met"
+    decision_info["side"] = None
+
+    # Condition Priority: Apply signals in order of potential strength/override capability
+
+    # 1. Bearish Divergence (Hold/Sell)
+    if rsi_divergence_signal == 'bearish':
+        decision_info["decision"] = "hold" # Prioritize holding or potentially selling
+        decision_info["side"] = None     # Or "sell"
+        decision_info["reason"] = f"Hold Signal: Bearish RSI Divergence detected (lookback={divergence_lookback})"
+        logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+        # If bearish divergence, maybe skip buy signals entirely?
+        pass # Continue to check other conditions, but prioritize this hold/sell
+
+    # 2. Bearish Pullback (Hold/Sell) - Only if not already decided by divergence
+    elif pullback_pattern == 'bearish_pullback':
+        decision_info["decision"] = "hold" # Or "sell"
+        decision_info["side"] = None     # Or "sell"
+        decision_info["reason"] = f"Hold Signal: Bearish Breakout & Pullback detected (breakout_lookback={breakout_lookback}, pullback_lookback={pullback_lookback})"
+        logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+        pass # Skip buy signals
+
+    # 3. Close below SMA 7 (Hold/Sell) - Only if not already decided by above
+    elif latest_close is not None and latest_sma_7 is not None and latest_close < latest_sma_7:
+        decision_info["decision"] = "hold" # Or "sell"
+        decision_info["side"] = None     # Or "sell"
+        decision_info["reason"] = f"Hold Signal: Close ({latest_close:.4f}) < SMA_7 ({latest_sma_7:.4f})"
+        logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+        pass # Skip buy signals below
+
+    # 4. Potential Rejection at POC (Hold/Sell confirmation) - Higher priority than Bullish Pullback?
+    # Check if price is currently near the POC and showing signs of rejection (e.g., upper wick)
+    # This check is placed before bullish signals if POC resistance is strong.
+    elif poc is not None and \
+         latest_close is not None and \
+         abs(latest_close - poc) / poc < settings.CHALLENGE_POC_THRESHOLD: # Price is near POC
+          # Example: Check if the last candle's high was near POC but close is lower
+          if df['High'].iloc[-1] >= poc * (1 - settings.CHALLENGE_POC_THRESHOLD*0.5) and latest_close < poc:
+               decision_info["decision"] = "hold" # Hold due to potential rejection
+               decision_info["reason"] = f"Hold Signal: Potential Rejection near POC ({poc:.4f})"
+               logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+               pass # Skip further buy checks
+
+    # 5. Bullish Pullback (Potential Buy) - Consider if near POC support
+    elif pullback_pattern == 'bullish_pullback':
+        buy_reason_base = f"Bullish Breakout & Pullback detected (bk={breakout_lookback}, pb={pullback_lookback})"
+        buy_reason = buy_reason_base
+        confirmation = []
+        if volume_surge_detected:
+             confirmation.append("Volume Surge")
+        # Check if pullback happened near POC acting as support
+        if poc is not None and abs(latest_close - poc) / poc < settings.CHALLENGE_POC_THRESHOLD and latest_close > poc:
+              confirmation.append(f"near POC Support ({poc:.4f})")
+              logging.info(f"[{symbol}] Bullish Pullback near POC support.")
+
+        if confirmation: # Buy if confirmed by Volume or POC support (or both)
+             decision_info["decision"] = "buy"
+             decision_info["side"] = "buy"
+             decision_info["reason"] = f"Tech Signal (Buy): {buy_reason_base} with {' and '.join(confirmation)}"
+             logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+        else: # Pullback detected but no volume or POC confirmation yet
+             decision_info["reason"] = f"Potential Buy: {buy_reason_base}, awaiting confirmation (Volume or POC)."
+             logging.info(f"[{symbol}] Condition Potential: {decision_info['reason']}")
+
+    # 6. Bounce from POC Support (Potential Buy) - Alternative Buy signal
+    elif poc is not None and \
+         latest_close is not None and low_col in df.columns and \
+         df[low_col].iloc[-1] < poc * (1 + settings.CHALLENGE_POC_THRESHOLD*0.5) and \
+         latest_close > poc and \
+         volume_surge_detected: # Require volume confirmation for bounce
+            # Check if price dipped slightly below POC but closed above it on volume
+            decision_info["decision"] = "buy"
+            decision_info["side"] = "buy"
+            decision_info["reason"] = f"Tech Signal (Buy): Bounce from POC Support ({poc:.4f}) with Volume Surge"
+            logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+
+    # 7. Original Buy Condition (RSI low, SMA cross, Volume) - Lower priority now
+    elif decision_info["decision"] == "hold" and \
+         latest_rsi is not None and latest_rsi < settings.CHALLENGE_RSI_THRESHOLD and \
+         latest_close is not None and latest_sma_long is not None and latest_close > latest_sma_long and \
+         volume_surge_detected:
+            buy_reason = f"Tech Signal (Buy): RSI ({latest_rsi:.2f} < {settings.CHALLENGE_RSI_THRESHOLD}) and Close > {sma_long_col} ({latest_sma_long:.2f}) with Volume Surge"
+            if rsi_divergence_signal == 'bullish': buy_reason += " and Bullish RSI Divergence"
+            # Add POC check: Is price above POC?
+            if poc is not None and latest_close > poc:
+                 buy_reason += f" (above POC {poc:.4f})"
+                 decision_info["decision"] = "buy"
+                 decision_info["side"] = "buy"
+                 decision_info["reason"] = buy_reason
+                 logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+            else:
+                logging.info(f"[{symbol}] RSI/SMA Buy condition met, but below POC ({poc:.4f if poc else 'N/A'}). Holding.")
+                decision_info["reason"] = f"Hold: RSI/SMA Buy Signal but below POC."
+
+    # 8. Original Sell Condition (RSI high, SMA cross, Volume?) - Lower priority
     elif latest_rsi is not None and latest_rsi > (100 - settings.CHALLENGE_RSI_THRESHOLD) and \
-         latest_close is not None and latest_sma is not None and latest_close < latest_sma:
-        decision_info["decision"] = "sell"
-        decision_info["side"] = "sell"
-        decision_info["reason"] = f"Tech Signal: RSI ({latest_rsi:.2f} > {100 - settings.CHALLENGE_RSI_THRESHOLD}) and Close < SMA ({latest_sma:.2f})"
-    else:
-        decision_info["decision"] = "hold"
-        decision_info["reason"] = "No strong technical signal met"
+         latest_close is not None and latest_sma_long is not None and latest_close < latest_sma_long and \
+         volume_surge_detected:
+            sell_reason = f"Tech Signal (Sell/Short): RSI ({latest_rsi:.2f} > {100 - settings.CHALLENGE_RSI_THRESHOLD}) and Close < {sma_long_col} ({latest_sma_long:.2f}) with Volume Surge"
+            if rsi_divergence_signal == 'bearish' and decision_info["reason"] != f"Hold Signal: Bearish RSI Divergence detected (lookback={divergence_lookback})":
+                 sell_reason += f" (below POC {poc:.4f})"
+                 if decision_info['reason'] != f"Hold Signal: Bearish RSI Divergence detected (lookback={divergence_lookback})": # Avoid duplicate setting if already decided
+                      decision_info["decision"] = "sell"
+                      decision_info["side"] = "sell"
+                      decision_info["reason"] = sell_reason
+                      logging.info(f"[{symbol}] Condition Met: {decision_info['reason']}")
+            else:
+                 logging.info(f"[{symbol}] RSI/SMA Sell condition met, but above POC ({poc:.4f if poc else 'N/A'}). Holding.")
+                 decision_info["reason"] = f"Hold: RSI/SMA Sell Signal but above POC."
 
+    # TODO: Add other conditions (Trendline, Divergence, Volume, VPVR)
+    # TODO: Refine how volume surge is used. Maybe it's only needed for BUY, or specific patterns?
 
     # --- [STEP 1-C START] Apply Sentiment & Prediction Overrides --- #
     initial_decision = decision_info["decision"]
