@@ -5,31 +5,34 @@ import pandas as pd
 import numpy as np # For NaN checks
 import logging
 from typing import Optional # Added for Optional type hint
-from src.config import settings # 설정값 사용
 from src.utils import strategy_utils # 기존 유틸 함수 사용
 # pandas-ta import도 필요할 수 있음
 import pandas_ta as ta
+import math
+import sys # Import sys for module checking
 
 class ChallengeStrategyBacktest(bt.Strategy):
     """
     Backtrader strategy class implementing the core logic of the Flight Challenge strategy.
     Focuses on technical indicators and conditions. AI overrides are not included by default.
     """
+    # Initialize params with placeholder values first
     params = (
-        ('sma_long_period', settings.CHALLENGE_SMA_PERIOD),
+        ('sma_long_period', 20), # Placeholder, will be set in __init__
         ('sma_short_period', 7),
-        ('rsi_period', settings.CHALLENGE_RSI_PERIOD),
-        ('rsi_threshold', settings.CHALLENGE_RSI_THRESHOLD),
-        ('volume_avg_period', settings.CHALLENGE_VOLUME_AVG_PERIOD),
-        ('volume_surge_ratio', settings.CHALLENGE_VOLUME_SURGE_RATIO),
-        ('divergence_lookback', settings.CHALLENGE_DIVERGENCE_LOOKBACK),
-        ('breakout_lookback', settings.CHALLENGE_BREAKOUT_LOOKBACK),
-        ('pullback_lookback', settings.CHALLENGE_PULLBACK_LOOKBACK),
-        ('poc_lookback', settings.CHALLENGE_POC_LOOKBACK),
-        ('poc_threshold', settings.CHALLENGE_POC_THRESHOLD),
-        ('sl_ratio', settings.CHALLENGE_SL_RATIO),
-        ('tp_ratio', settings.CHALLENGE_TP_RATIO),
-        ('printlog', True), # 로그 출력 여부
+        ('rsi_period', 14),      # Placeholder
+        ('rsi_threshold', 30),   # Placeholder
+        ('volume_avg_period', 20), # Placeholder
+        ('volume_surge_ratio', 2.0), # Placeholder
+        ('divergence_lookback', 28), # Placeholder
+        ('breakout_lookback', 40), # Placeholder
+        ('pullback_lookback', 10), # Placeholder
+        ('poc_lookback', 50),     # Placeholder
+        ('poc_threshold', 0.005), # Placeholder
+        ('pullback_threshold', 0.01), # Add default for optimization target
+        ('sl_ratio', 0.05),      # Placeholder
+        ('tp_ratio', 0.10),      # Placeholder
+        ('printlog', True),
     )
 
     def log(self, txt, dt=None, doprint=False):
@@ -39,6 +42,24 @@ class ChallengeStrategyBacktest(bt.Strategy):
             print(f'{dt.isoformat()}, {txt}')
 
     def __init__(self):
+        # from src.config import settings # <<< REMOVE THIS LINE
+
+        # --- Enhanced Diagnostic Print (Inside __init__) --- 
+        # <<< REMOVE THIS ENTIRE BLOCK >>>
+        # print(f"\n--- Diagnostics inside {self.__class__.__name__}.__init__ ---")
+        # try:
+        #    ...
+        # print("--- End Diagnostics ---\n")
+        # --- End Enhanced Diagnostic Print ---
+
+        # Override params with values from settings <-- This comment is now incorrect
+        # Parameters are now directly populated by backtrader from kwargs passed in runner.
+        # self.params.sma_long_period = settings.CHALLENGE_SMA_PERIOD # <<< No longer needed
+        # self.params.rsi_period = settings.CHALLENGE_RSI_PERIOD       # <<< No longer needed
+        # ... and so on for all lines accessing settings directly ...
+        # Keep the lines assigning default values in params tuple at the class level.
+        # Backtrader uses those defaults if not overridden by kwargs.
+
         # Keep a reference to the "close" line in the data[0] dataseries
         self.dataclose = self.datas[0].close
         self.datahigh = self.datas[0].high
@@ -56,7 +77,7 @@ class ChallengeStrategyBacktest(bt.Strategy):
         # However, to maintain consistency with strategy.py, we might calculate using pandas on buffered data.
         # Or, use backtrader indicators that match strategy_utils logic.
 
-        # Option 1: Use backtrader indicators
+        # Option 1: Use backtrader indicators (Re-enabled)
         self.sma_long = bt.indicators.SimpleMovingAverage(
             self.datas[0], period=self.params.sma_long_period)
         self.sma_short = bt.indicators.SimpleMovingAverage(
@@ -65,6 +86,12 @@ class ChallengeStrategyBacktest(bt.Strategy):
             period=self.params.rsi_period)
         self.volume_sma = bt.indicators.SimpleMovingAverage(
              self.datavolume, period=self.params.volume_avg_period)
+        
+        # Assign None temporarily so later code doesn't break immediately
+        # self.sma_long = None # Removed temporary assignment
+        # self.sma_short = None
+        # self.rsi = None
+        # self.volume_sma = None
         # POC requires custom implementation or approximation within backtrader
         # Divergence and Breakout/Pullback also require custom logic within next()
 
@@ -81,6 +108,8 @@ class ChallengeStrategyBacktest(bt.Strategy):
         # self.poc_series = strategy_utils.calculate_poc(self.df, ...) # Requires careful slicing
 
         logging.info("Challenge Strategy Backtest Initialized.")
+        # --- __init__ 완료 확인 로그 (선택 사항, 일단 유지) ---
+        self.log("--- __init__ completed successfully ---", doprint=True)
 
     def notify_order(self, order):
         if order.status in [order.Submitted, order.Accepted]:
@@ -116,55 +145,65 @@ class ChallengeStrategyBacktest(bt.Strategy):
         Helper function to get buffered data as a pandas DataFrame.
         Requires enough data points to be loaded in the buffer.
         """
-        if len(self.datas[0]) < min_required_len:
-             # self.log(f"Warning: Not enough data ({len(self.datas[0])}) for required lookback ({min_required_len})")
-             return None # Not enough data in the buffer yet
+        try:
+            # --- 디버깅용 print 로그 제거 ---
+            # print(f"DEBUG PRINT: --- _get_buffered_df called. Buffer: {len(self.datas[0])}, Required: {min_required_len} ---")
 
-        # Determine the actual size to get (max needed)
-        size = max(min_required_len, len(self.datas[0])) # Get all available if buffer is full
+            if len(self.datas[0]) < min_required_len:
+                 # --- 디버깅용 print 로그 제거 ---
+                 # print(f"DEBUG PRINT: --- _get_buffered_df returning None (data < required) ---")
+                 return None
 
-        # Get data lines as lists/arrays
-        opens = self.datas[0].open.get(size=size)
-        highs = self.datas[0].high.get(size=size)
-        lows = self.datas[0].low.get(size=size)
-        closes = self.datas[0].close.get(size=size)
-        volumes = self.datas[0].volume.get(size=size)
-        datetimes = self.datas[0].datetime.get(size=size) # Get datetime objects
-        # Get RSI values from the indicator buffer
-        rsi_values = self.rsi.get(size=size) # Make sure RSI indicator is calculated first
+            # --- 디버깅용 print 로그 제거 ---
+            size = max(min_required_len, len(self.datas[0]))
+            # print(f"DEBUG PRINT: --- _get_buffered_df requesting size: {size} ---")
 
-        # Convert datetimes to pandas Timestamps
-        timestamps = [bt.num2date(dt) for dt in datetimes]
+            opens = self.datas[0].open.get(size=size)
+            highs = self.datas[0].high.get(size=size)
+            lows = self.datas[0].low.get(size=size)
+            closes = self.datas[0].close.get(size=size)
+            volumes = self.datas[0].volume.get(size=size)
+            datetimes = self.datas[0].datetime.get(size=size)
+            rsi_values = self.rsi.get(size=size)
+            # print(f"DEBUG PRINT: --- _get_buffered_df data retrieved successfully ---")
 
-        # Create DataFrame
-        df = pd.DataFrame({
-            'Open': opens,
-            'High': highs,
-            'Low': lows,
-            'Close': closes,
-            'Volume': volumes,
-            'RSI': rsi_values # Add RSI column
-        }, index=pd.DatetimeIndex(timestamps)) # Use timestamps as index
+            timestamps = [bt.num2date(dt) for dt in datetimes]
+            # print(f"DEBUG PRINT: --- _get_buffered_df timestamps converted ---")
 
-        # Drop initial rows where RSI might be NaN if needed by utils functions
-        # df.dropna(subset=['RSI'], inplace=True)
-        # if len(df) < min_required_len: return None # Check again after dropna
+            df = pd.DataFrame({
+                'Open': opens, 'High': highs, 'Low': lows, 'Close': closes,
+                'Volume': volumes, 'RSI': rsi_values
+            }, index=pd.DatetimeIndex(timestamps))
+            # print(f"DEBUG PRINT: --- _get_buffered_df DataFrame created successfully ---")
 
-        return df
+            return df
+
+        except Exception as e:
+            # --- 예외 발생 시 표준 로깅 사용 ---
+            # print(...) 대신 logging.error 사용
+            logging.error(f"EXCEPTION CAUGHT in _get_buffered_df: Type={type(e).__name__}, Args={e.args}", exc_info=True)
+            # import traceback # traceback import 제거
+            # print(traceback.format_exc()) # print 대신 logging 사용
+            # print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            return None # 예외 발생 시 None 반환
 
     def next(self):
-        # Log the closing price of the series from the latest bar
-        # self.log('Close, %.2f' % self.dataclose[0])
+        # --- next() 메소드 호출 확인 로그 (선택 사항, 일단 주석 처리) ---
+        # self.log("--- next() method called --- ", doprint=True)
+        # --- 디버깅용 print 로그 제거 ---
+        # print("DEBUG PRINT: --- Starting max_lookback calculation ---")
 
         # --- Calculate Custom Indicators using Buffered Data ---
-        # Determine the maximum lookback needed by all custom indicators
         max_lookback_needed = max(
             self.params.poc_lookback,
-            self.params.divergence_lookback * 2, # divergence needs two periods
+            self.params.divergence_lookback * 2,
             self.params.breakout_lookback + self.params.pullback_lookback
-        ) + 5 # Add a small buffer
+        ) + 5
+        # --- 디버깅용 print 로그 제거 ---
+        # print(f"DEBUG PRINT: --- Calculated max_lookback_needed: {max_lookback_needed} ---")
 
-        # Get buffered data as DataFrame
+        # --- 디버깅용 print 로그 제거 ---
+        # print("DEBUG PRINT: --- About to call _get_buffered_df --- ")
         df_buffer = self._get_buffered_df(max_lookback_needed)
 
         # Calculate indicators only if we have enough data
@@ -201,115 +240,112 @@ class ChallengeStrategyBacktest(bt.Strategy):
              self.poc = None
              self.rsi_divergence = 'none'
              self.pullback_signal = 'none'
+        
+        # <<< Logging for Custom Indicators (self.log 복원) >>>
+        poc_str = f"{self.poc:.4f}" if self.poc is not None else "N/A"
+        self.log(f"Custom Indicators: POC={poc_str}, RSI Div={self.rsi_divergence}, Pullback={self.pullback_signal}")
 
         # Access standard indicator values (calculated by backtrader)
         current_close = self.dataclose[0]
         current_volume = self.datavolume[0]
-        sma_long_val = self.sma_long[0]
+        sma_long_val = self.sma_long[0] # Ensure sma_long is defined if used
         sma_short_val = self.sma_short[0]
         rsi_val = self.rsi[0]
         avg_volume_val = self.volume_sma[0]
 
         # --- Condition Check ---
-        # Check if an order is pending ... if yes, we cannot send a 2nd one
         if self.order:
-            return
+             # --- 디버깅용 print 로그 제거 ---
+             # print(f"DEBUG PRINT: next() returning early because self.order is not None: {self.order}")
+             return
 
-        # Check if we are in the market
         if not self.position:
-            # --- Entry Logic ---
             decision = 'hold'
             reason = "No signal (or insufficient data)"
             side = None
 
-            # Ensure indicators are valid before checking conditions
-            if df_buffer is None or pd.isna(rsi_val) or pd.isna(sma_long_val) or pd.isna(sma_short_val):
-                 self.log("Waiting for indicators to warm up...")
-                 return # Skip condition checks if indicators are not ready
+            indicators_valid = all([
+                not math.isnan(current_close),
+                not math.isnan(current_volume),
+                not math.isnan(sma_short_val),
+                not math.isnan(rsi_val),
+                avg_volume_val is not None and not math.isnan(avg_volume_val) and avg_volume_val > 0,
+                self.pullback_signal != 'none'
+            ])
+            # <<< Logging for indicator validity (self.log 복원) >>>
+            self.log(f"Indicators Valid Check: {indicators_valid}")
 
-            # Check volume surge
-            volume_surge_detected = False
-            if not pd.isna(avg_volume_val) and avg_volume_val > 0 and not pd.isna(current_volume):
-                if current_volume > avg_volume_val * self.params.volume_surge_ratio:
-                     volume_surge_detected = True
+            poc_valid_and_above = self.poc is not None and not math.isnan(self.poc) and current_close > self.poc
 
-            # Apply condition hierarchy (using self.poc, self.rsi_divergence, self.pullback_signal)
-            if self.rsi_divergence == 'bearish':
-                decision = 'hold'
-                reason = f"Hold: Bearish RSI Divergence"
-            elif self.pullback_signal == 'bearish_pullback':
-                 decision = 'hold'
-                 reason = f"Hold: Bearish Breakout/Pullback"
-            elif current_close < sma_short_val:
-                decision = 'hold'
-                reason = f"Hold: Close < SMA{self.params.sma_short_period}"
-            # Check for potential rejection near POC before bullish signals
-            elif self.poc is not None and abs(current_close - self.poc) / self.poc < self.params.poc_threshold:
-                 # Simple check: if price touched near POC but closed below it
-                 if self.datahigh[0] >= self.poc * (1 - self.params.poc_threshold*0.5) and current_close < self.poc:
-                     decision = 'hold'
-                     reason = f"Hold: Potential Rejection near POC ({self.poc:.4f})"
-                 # else: Near POC but no clear rejection, continue checks
+            if indicators_valid:
+                # Bullish Entry Conditions
+                is_bullish_pullback = self.pullback_signal == 'bullish_pullback'
+                is_volume_surge = current_volume > (avg_volume_val * self.params.volume_surge_ratio)
+                is_above_sma7 = current_close > sma_short_val
+                is_bullish_divergence = self.rsi_divergence == 'bullish'
 
-            # Bullish Signals (only if decision is still 'hold')
-            elif decision == 'hold':
-                 if self.pullback_signal == 'bullish_pullback':
-                     buy_reason_base = f"Bullish Breakout/Pullback"
-                     confirmation = []
-                     if volume_surge_detected: confirmation.append("Volume Surge")
-                     if self.poc is not None and abs(current_close - self.poc) / self.poc < self.params.poc_threshold and current_close > self.poc:
-                         confirmation.append(f"near POC Support ({self.poc:.4f})")
+                # <<< Conditional Logging for Individual Conditions (self.log 유지) >>>
+                if is_bullish_pullback or is_volume_surge:
+                    self.log(f"CONDITIONS MET CHECK: is_bullish_pullback={is_bullish_pullback}, is_volume_surge={is_volume_surge}, is_above_sma7={is_above_sma7}, poc_valid_and_above={poc_valid_and_above}, is_bullish_divergence={is_bullish_divergence}")
 
-                     if confirmation:
-                          decision = 'buy'
-                          reason = f"Buy: {buy_reason_base} w/ {' & '.join(confirmation)}"
-                          side = 'buy'
-                     else:
-                          reason = f"Potential Buy: {buy_reason_base}, awaiting confirmation"
+                # Combine conditions for Buy (is_bullish_pullback 복원됨)
+                buy_condition = (
+                    is_bullish_pullback and
+                    is_volume_surge and
+                    is_above_sma7 and
+                    (self.poc is None or poc_valid_and_above)
+                    # and is_bullish_divergence
+                )
+                
+                # <<< Conditional Logging for Final Buy Condition (self.log 유지) >>>
+                if buy_condition or (is_bullish_pullback or is_volume_surge):
+                    self.log(f"Final Buy Condition Check: {buy_condition}")
 
-                 elif self.poc is not None and self.datalow[0] < self.poc * (1 + self.params.poc_threshold*0.5) and current_close > self.poc and volume_surge_detected:
-                      decision = 'buy'
-                      reason = f"Buy: Bounce from POC Support ({self.poc:.4f}) w/ Volume"
-                      side = 'buy'
+                if buy_condition:
+                    decision = 'buy'
+                    reason = f"Bullish Pullback + Vol Surge + >SMA7"
+                    if poc_valid_and_above: reason += " + >POC"
+                    # if is_bullish_divergence: reason += " + Bullish Div" # 다이버전스 조건은 아직 미사용
+                    side = 'buy'
+            else:
+                 reason = "Insufficient data or invalid indicators"
+                 self.log(f"HOLD: {reason}")
 
-                 elif rsi_val < self.params.rsi_threshold and current_close > sma_long_val and volume_surge_detected:
-                      buy_reason = f"Buy: RSI Low + SMA Cross + Vol Surge"
-                      if self.rsi_divergence == 'bullish': buy_reason += " + Bullish Div"
-                      if self.poc is not None and current_close > self.poc:
-                           buy_reason += f" > POC ({self.poc:.4f})"
-                           decision = 'buy' # Only buy if above POC for this signal
-                           reason = buy_reason
-                           side = 'buy'
-                      else:
-                           reason = f"Hold: RSI/SMA Buy Signal but below POC ({self.poc:.4f if self.poc else 'N/A'})"
-
-
-            # Place Buy Order if conditions met
             if decision == 'buy':
                 self.log(f'BUY CREATE, {current_close:.2f} - Reason: {reason}')
-                # TODO: Implement risk-based sizing
-                # Example fixed size:
-                stake_size = self.broker.getsizer().p.stake # Get stake from sizer
-                self.order = self.buy(size=stake_size)
-
-
+                self.order = self.buy() # Sizer 사용
         else: # We are in the market
-            # --- Exit Logic (Stop Loss / Take Profit) ---
+            # --- Exit Logic (Restored) ---
             exit_reason = None
-            if self.position.size > 0 and self.buyprice is not None: # Long position
-                sl_price = self.buyprice * (1.0 - self.params.sl_ratio)
-                tp_price = self.buyprice * (1.0 + self.params.tp_ratio)
-                if current_close <= sl_price:
-                    exit_reason = f"Stop Loss (Long) at {sl_price:.2f}"
-                elif current_close >= tp_price:
-                    exit_reason = f"Take Profit (Long) at {tp_price:.2f}"
-            elif self.position.size < 0: # Short position
-                # Implement Short Exit Logic if needed
-                pass
+            indicators_valid_exit = all([
+                not math.isnan(current_close),
+                not math.isnan(sma_short_val),
+                self.rsi_divergence != 'none', # Need divergence signal
+                self.pullback_signal != 'none' # Need pullback/breakdown signal
+            ])
+
+            # Check Take Profit
+            if self.position.size > 0 and self.buyprice is not None and current_close >= self.buyprice * (1.0 + self.params.tp_ratio):
+                exit_reason = f"Take Profit (Long) at {current_close:.2f}"
+            # Check Stop Loss
+            elif self.position.size > 0 and self.buyprice is not None and current_close <= self.buyprice * (1.0 - self.params.sl_ratio):
+                exit_reason = f"Stop Loss (Long) at {current_close:.2f}"
+            # Check Signal-based Exit
+            elif self.position.size > 0 and indicators_valid_exit and exit_reason is None:
+                is_bearish_divergence = self.rsi_divergence == 'bearish'
+                is_bearish_breakdown = self.pullback_signal == 'bearish_breakdown'
+                is_below_sma7 = current_close < sma_short_val
+
+                if is_bearish_divergence or is_bearish_breakdown or is_below_sma7:
+                    reason_detail = []
+                    if is_bearish_divergence: reason_detail.append("Bearish Div")
+                    if is_bearish_breakdown: reason_detail.append("Bearish Breakdown")
+                    if is_below_sma7: reason_detail.append("<SMA7")
+                    exit_reason = f"Signal Exit: { ' & '.join(reason_detail)}"
 
             if exit_reason:
                 self.log(f'CLOSE CREATE (Exit), {current_close:.2f} - Reason: {exit_reason}')
-                self.order = self.close() # Close position
+                self.order = self.close()
 
     # Optional: Implement stop() method for end-of-run cleanup or analysis
     # def stop(self):

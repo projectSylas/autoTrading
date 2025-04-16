@@ -577,7 +577,7 @@ def calculate_position_size(entry_price: float, stop_loss_price: float, risk_per
         account_balance = float(usdt_balance)
     except Exception as e:
         logging.error(f"Error fetching account balance for sizing: {e}")
-        return None
+            return None
 
 
     risk_amount = account_balance * risk_per_trade
@@ -700,7 +700,7 @@ def run_challenge_strategy():
     symbols_to_trade = settings.CHALLENGE_SYMBOLS
     if not symbols_to_trade:
         logging.warning("No symbols defined in settings.CHALLENGE_SYMBOLS. Skipping strategy execution.")
-        return
+                 return
 
     for symbol in symbols_to_trade:
         logging.info(f"--- Processing symbol: {symbol} ---")
@@ -761,14 +761,14 @@ def run_challenge_strategy():
                         else:
                              logging.warning(f"[{symbol}] Cannot calculate position size without a valid stop loss price.")
 
-                        if quantity and quantity > 0:
+            if quantity and quantity > 0:
                             order_side = decision_info["decision"].upper()
                             logging.info(f"[{symbol}] Placing {order_side} order. Qty: {quantity}, Entry: ~{entry_price:.5f}, SL: {stop_loss_price:.5f}. Reason: {decision_info['reason']}")
                             order_result = create_futures_order(symbol, order_side, quantity)
 
                             if order_result:
                                 # Log trade to DB if function is available
-                                if log_trade_to_db:
+                     if log_trade_to_db:
                                     try:
                                         # Use actual executed price and quantity if available
                                         filled_price = float(order_result.get('avgPrice', entry_price))
@@ -808,7 +808,7 @@ def run_challenge_strategy():
                     logging.info(f"[{symbol}] Decision is HOLD. Reason: {decision_info['reason']}")
                     # Log overridden holds if desired
                     if decision_info["override_reason"] and log_trade_to_db and settings.LOG_OVERRIDES_TO_DB: # Add setting flag
-                        try:
+                         try:
                              log_trade_to_db(
                                  timestamp=datetime.now(), symbol=symbol, order_type="hold_override",
                                  side="none", price=decision_info.get('price'), quantity=0, strategy="challenge",
@@ -816,7 +816,7 @@ def run_challenge_strategy():
                                  sentiment_score=decision_info.get('sentiment_score'), prediction_trend=decision_info.get('prediction_trend'),
                                  notes=decision_info["override_reason"]
                              )
-                        except Exception as db_err:
+                         except Exception as db_err:
                              logging.error(f"Failed to log overridden hold to DB: {db_err}")
 
         except BinanceAPIException as bae:

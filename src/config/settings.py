@@ -2,9 +2,14 @@ import os
 from dotenv import load_dotenv
 import logging
 from pydantic_settings import BaseSettings
+from pydantic import ValidationError # Import ValidationError
 
 # .env 파일 로드 (파일이 없어도 오류 발생 안 함)
-load_dotenv()
+try:
+    dotenv_loaded = load_dotenv()
+    logging.info(f"[{__name__}] load_dotenv() executed. Found .env file: {dotenv_loaded}")
+except Exception as e:
+    logging.error(f"[{__name__}] Error during load_dotenv(): {e}")
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -67,10 +72,10 @@ class Settings(BaseSettings):
     CORE_RSI_THRESHOLD: int = int(os.getenv("CORE_RSI_THRESHOLD", "30"))
     CORE_VIX_THRESHOLD: int = int(os.getenv("CORE_VIX_THRESHOLD", "25"))
     CORE_REBALANCE_THRESHOLD: float = float(os.getenv("CORE_REBALANCE_THRESHOLD", "0.15"))
-    CHALLENGE_SYMBOLS: list = os.getenv("CHALLENGE_SYMBOLS", "BTCUSDT,ETHUSDT").split(',')
+    CHALLENGE_SYMBOLS: str = os.getenv("CHALLENGE_SYMBOLS", "BTCUSDT,ETHUSDT")
     CHALLENGE_LEVERAGE: int = int(os.getenv("CHALLENGE_LEVERAGE", "10"))
     CHALLENGE_SEED_PERCENTAGE: float = float(os.getenv("CHALLENGE_SEED_PERCENTAGE", "0.05"))
-    CHALLENGE_TP_RATIO: float = float(os.getenv("CHALLENGE_TP_RATIO", "0.10"))
+    CHALLENGE_TP_RATIO: float = float(os.getenv("CHALLENGE_TP_RATIO", 0.03))
     CHALLENGE_SL_RATIO: float = float(os.getenv("CHALLENGE_SL_RATIO", "0.05"))
     CHALLENGE_SMA_PERIOD: int = int(os.getenv("CHALLENGE_SMA_PERIOD", "20"))
     CHALLENGE_RSI_PERIOD: int = int(os.getenv("CHALLENGE_RSI_PERIOD", "14"))
@@ -84,9 +89,10 @@ class Settings(BaseSettings):
     CHALLENGE_VOLUME_SURGE_RATIO: float = float(os.getenv("CHALLENGE_VOLUME_SURGE_RATIO", "2.0"))
     CHALLENGE_DIVERGENCE_LOOKBACK: int = int(os.getenv("CHALLENGE_DIVERGENCE_LOOKBACK", "28"))
     CHALLENGE_BREAKOUT_LOOKBACK: int = int(os.getenv("CHALLENGE_BREAKOUT_LOOKBACK", "40"))
-    CHALLENGE_PULLBACK_LOOKBACK: int = int(os.getenv("CHALLENGE_PULLBACK_LOOKBACK", "10"))
-    CHALLENGE_POC_LOOKBACK: int = int(os.getenv("CHALLENGE_POC_LOOKBACK", "50"))
-    CHALLENGE_POC_THRESHOLD: float = float(os.getenv("CHALLENGE_POC_THRESHOLD", "0.005"))
+    CHALLENGE_PULLBACK_LOOKBACK: int = int(os.getenv("CHALLENGE_PULLBACK_LOOKBACK", 10))
+    CHALLENGE_PULLBACK_THRESHOLD: float = float(os.getenv("CHALLENGE_PULLBACK_THRESHOLD", 0.01))
+    CHALLENGE_POC_LOOKBACK: int = int(os.getenv("CHALLENGE_POC_LOOKBACK", 50))
+    CHALLENGE_POC_THRESHOLD: float = float(os.getenv("CHALLENGE_POC_THRESHOLD", 0.7))
     LOG_OVERRIDES_TO_DB: bool = os.getenv("LOG_OVERRIDES_TO_DB", "False").lower() == "true"
     CHALLENGE_SYMBOL_DELAY_SECONDS: float = float(os.getenv("CHALLENGE_SYMBOL_DELAY_SECONDS", "1.0"))
 
@@ -102,13 +108,31 @@ class Settings(BaseSettings):
     ENABLE_SENTIMENT_ANALYSIS: bool = os.getenv("ENABLE_SENTIMENT_ANALYSIS", "True").lower() == "true"
     ENABLE_VOLATILITY_ALERT: bool = os.getenv("ENABLE_VOLATILITY_ALERT", "False").lower() == "true"
 
+logging.info(f"[{__name__}] Settings class defined. Attempting to instantiate...") # Log before instantiation
 # 설정 인스턴스 생성 (다른 모듈에서 import하여 사용)
-settings = Settings()
+try:
+    settings = Settings()
+    logging.info(f"[{__name__}] Settings instance created successfully. Type: {type(settings)}, ID: {id(settings)}") # Log after instantiation
+    # Log a specific attribute to confirm loading
+    if hasattr(settings, 'CHALLENGE_SMA_PERIOD'):
+        logging.info(f"[{__name__}] settings.CHALLENGE_SMA_PERIOD = {settings.CHALLENGE_SMA_PERIOD}")
+    else:
+        logging.warning(f"[{__name__}] settings object created, but CHALLENGE_SMA_PERIOD attribute is missing!")
+except ValidationError as ve:
+    logging.error(f"[{__name__}] Pydantic ValidationError during Settings instantiation: {ve}", exc_info=True)
+    # Optionally raise the error or set settings to None or a default object
+    settings = None # Set to None on validation error
+except Exception as e:
+    logging.error(f"[{__name__}] Unexpected error during Settings instantiation: {e}", exc_info=True)
+    settings = None # Set to None on other errors
+
+if settings is None:
+    logging.critical(f"[{__name__}] Settings object could not be initialized. Exiting or using fallback is necessary.")
+    # Depending on the application, you might exit or raise an exception here
+    # raise RuntimeError("Failed to initialize settings")
 
 # 사용 예시:
 # from src.config.settings import settings
-# print(settings.ALPACA_API_KEY)
-# print(settings.HF_SENTIMENT_MODEL_NAME)
 
 # --- Environment Variable Check ---
 def check_env_vars():

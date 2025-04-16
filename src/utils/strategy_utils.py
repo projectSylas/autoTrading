@@ -234,83 +234,111 @@ def detect_trendline_breakout_pullback(df: pd.DataFrame,
                                        lookback_pullback: int = 5,
                                        pullback_threshold: float = 0.01) -> str:
     """
-    Detects a simplified breakout of recent high/low followed by a pullback.
-    This is a basic implementation and might need significant refinement.
+    Detects a breakout of a recent high/low followed by a pullback towards the breakout level.
+    Improved logic: Identifies the breakout bar first, then checks for pullback after.
 
     Args:
         df (pd.DataFrame): DataFrame with price data (Close, High, Low). Index must be sorted.
         price_col (str): Column for current price checks ('Close').
         high_col (str): Column for high prices.
         low_col (str): Column for low prices.
-        lookback_breakout (int): Period to look back for finding the breakout level (highest high / lowest low).
-        lookback_pullback (int): Period to look back from the breakout point to detect pullback.
-        pullback_threshold (float): Relative threshold to define a valid pullback (e.g., pullback within 1% of breakout level).
+        lookback_breakout (int): Period before the potential breakout to find the high/low level.
+        lookback_pullback (int): Period after the potential breakout to look for pullback.
+                                  Also defines how recently the breakout must have occurred.
+        pullback_threshold (float): Relative threshold defining how close the pullback must be to the breakout level.
 
     Returns:
-        str: 'bullish_pullback' (broke high, pulled back to it),
-             'bearish_pullback' (broke low, pulled back to it),
-             'none'.
+        str: 'bullish_pullback', 'bearish_breakdown', or 'none'.
     """
-    if df is None or df.empty or len(df) < lookback_breakout + lookback_pullback:
-        logging.warning("detect_trendline_breakout_pullback: Insufficient data.")
+    if df is None or df.empty or not all(c in df.columns for c in [price_col, high_col, low_col]):
+        logging.warning("detect_trendline_breakout_pullback: Invalid input DataFrame or missing columns.")
         return 'none'
-    if not all(col in df.columns for col in [price_col, high_col, low_col]):
-         logging.warning("detect_trendline_breakout_pullback: Missing required price columns.")
-         return 'none'
+    # Need enough data for breakout period + pullback lookback period + current bar
+    required_len = lookback_breakout + lookback_pullback + 1
+    if len(df) < required_len:
+        logging.debug(f"detect_trendline_breakout_pullback: Insufficient data ({len(df)}) for lookbacks ({required_len}).")
+        return 'none'
 
-    logging.debug(f"Detecting breakout/pullback with lookback_breakout={lookback_breakout}, lookback_pullback={lookback_pullback}")
-    # --- Placeholder for actual logic ---
-    # 1. Find highest high / lowest low in the 'lookback_breakout' period preceding the 'lookback_pullback' period.
-    # 2. Check if price broke above highest high / below lowest low within the recent 'lookback_pullback' period.
-    # 3. If breakout occurred, check if price pulled back towards the breakout level without violating it significantly.
-    # 4. Return 'bullish_pullback', 'bearish_pullback', or 'none'.
-
-    # Example (very basic structure, logic needs implementation):
     try:
-        # Define periods
-        recent_period = df.iloc[-lookback_pullback:]
-        breakout_scan_period = df.iloc[-(lookback_breakout + lookback_pullback):-lookback_pullback]
+        current_index = len(df) - 1 # 현재 봉의 인덱스 (0부터 시작)
+        current_close = df[price_col].iloc[current_index]
 
-        if breakout_scan_period.empty:
-            logging.warning("Breakout scan period is empty.")
-            return 'none'
+        # Iterate backwards from `lookback_pullback` bars ago up to yesterday to find a potential breakout bar
+        # Example: lookback_pullback=5 -> Check bars at index -5, -4, -3, -2, -1
+        for i in range(lookback_pullback, 0, -1):
+            potential_breakout_index = current_index - i
+            if potential_breakout_index < lookback_breakout: # Need enough preceding data to define breakout level
+                continue
 
-        # Find breakout levels
-        highest_high = breakout_scan_period[high_col].max()
-        lowest_low = breakout_scan_period[low_col].min()
+            potential_breakout_high = df[high_col].iloc[potential_breakout_index]
+            potential_breakout_low = df[low_col].iloc[potential_breakout_index]
 
-        # --- Check for Bullish Breakout and Pullback ---
-        # Did price break above highest_high recently?
-        breakout_up = recent_period[high_col].max() > highest_high # Simple check
-        pullback_to_high = False
-        if breakout_up:
-            # Check if price came back near highest_high without going too far below
-            # This requires more detailed logic tracking price after potential breakout
-            # Placeholder: Check if recent low is near the breakout level
-             if recent_period[low_col].min() >= highest_high * (1 - pullback_threshold) and \
-                recent_period[price_col].iloc[-1] > highest_high * (1 - pullback_threshold*0.5): # Current price bounced?
-                 pullback_to_high = True
-                 logging.info(f"Potential Bullish Pullback Detected: Broke {highest_high:.2f}, pulled back near it.")
-                 return 'bullish_pullback' # Simplistic return
+            # --- Define Breakout Level --- 
+            # Look back `lookback_breakout` bars *before* the potential breakout bar
+            breakout_level_period_start = potential_breakout_index - lookback_breakout
+            breakout_level_period_end = potential_breakout_index # exclusive
+            breakout_level_df = df.iloc[breakout_level_period_start:breakout_level_period_end]
 
-        # --- Check for Bearish Breakout and Pullback ---
-        # Did price break below lowest_low recently?
-        breakout_down = recent_period[low_col].min() < lowest_low # Simple check
-        pullback_to_low = False
-        if breakout_down and not pullback_to_high: # Avoid conflicting signals immediately
-             # Check if price came back near lowest_low without going too far above
-             # Placeholder: Check if recent high is near the breakout level
-             if recent_period[high_col].max() <= lowest_low * (1 + pullback_threshold) and \
-                recent_period[price_col].iloc[-1] < lowest_low * (1 + pullback_threshold*0.5): # Current price rejected?
-                 pullback_to_low = True
-                 logging.info(f"Potential Bearish Pullback Detected: Broke {lowest_low:.2f}, pulled back near it.")
-                 return 'bearish_pullback' # Simplistic return
+            if breakout_level_df.empty: continue # Should not happen with length check, but be safe
+
+            highest_high_before_breakout = breakout_level_df[high_col].max()
+            lowest_low_before_breakout = breakout_level_df[low_col].min()
+
+            # --- Check for Bullish Breakout Event --- 
+            # Did the high of the potential breakout bar exceed the previous highest high?
+            is_bullish_breakout_bar = potential_breakout_high > highest_high_before_breakout
+
+            if is_bullish_breakout_bar:
+                # Breakout identified at `potential_breakout_index`
+                # Now, check for pullback in the period *after* the breakout bar, up to the current bar
+                pullback_check_start = potential_breakout_index + 1
+                pullback_check_end = current_index + 1 # inclusive
+                pullback_period_df = df.iloc[pullback_check_start:pullback_check_end]
+
+                if not pullback_period_df.empty:
+                    lowest_low_after_breakout = pullback_period_df[low_col].min()
+
+                    # Check if the pullback low touched near the breakout level
+                    # and if the current close is above the pullback low (bounce)
+                    pullback_valid = lowest_low_after_breakout <= highest_high_before_breakout * (1 + pullback_threshold)
+                    bounce_valid = current_close > lowest_low_after_breakout
+
+                    if pullback_valid and bounce_valid:
+                         logging.info(f"Bullish Pullback Detected: Breakout Bar {potential_breakout_index}, Broke Level {highest_high_before_breakout:.2f}, Pulled back to {lowest_low_after_breakout:.2f}, Current {current_close:.2f}")
+                         return 'bullish_pullback'
+                # If a bullish breakout was found, no need to check further back for other breakouts
+                break # Exit the loop once the most recent valid breakout is checked
+
+            # --- Check for Bearish Breakdown Event --- 
+            # Did the low of the potential breakout bar go below the previous lowest low?
+            is_bearish_breakdown_bar = potential_breakout_low < lowest_low_before_breakout
+
+            if is_bearish_breakdown_bar:
+                # Breakdown identified at `potential_breakout_index`
+                # Check for pullback (rally attempt) after the breakdown bar
+                pullback_check_start = potential_breakout_index + 1
+                pullback_check_end = current_index + 1
+                pullback_period_df = df.iloc[pullback_check_start:pullback_check_end]
+
+                if not pullback_period_df.empty:
+                    highest_high_after_breakdown = pullback_period_df[high_col].max()
+
+                    # Check if the rally attempt reached near the breakdown level
+                    # and if the current close is below the rally high (failed rally)
+                    pullback_valid = highest_high_after_breakdown >= lowest_low_before_breakout * (1 - pullback_threshold)
+                    rejection_valid = current_close < highest_high_after_breakdown
+
+                    if pullback_valid and rejection_valid:
+                        logging.info(f"Bearish Breakdown Detected: Breakdown Bar {potential_breakout_index}, Broke Level {lowest_low_before_breakout:.2f}, Pulled back to {highest_high_after_breakdown:.2f}, Current {current_close:.2f}")
+                        return 'bearish_breakdown'
+                # If a bearish breakdown was found, no need to check further back
+                break
 
     except Exception as e:
-         logging.error(f"detect_trendline_breakout_pullback: Error detecting: {e}", exc_info=True)
-         return 'none'
+        logging.error(f"detect_trendline_breakout_pullback: Error detecting: {e}", exc_info=True)
+        return 'none'
 
-    return 'none' # Default
+    return 'none' # No valid breakout/pullback pattern found within the lookback period
 
 def calculate_poc(df: pd.DataFrame, lookback: int = 50, price_col: str = 'Close', volume_col: str = 'Volume') -> Optional[float]:
     """
