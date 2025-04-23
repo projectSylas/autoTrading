@@ -13,7 +13,7 @@ alpaca-trade-api = ">=3.2.0,<4.0.0"
 python-binance = ">=1.0.28,<2.0.0"
 mexc-api = ">=0.0.2,<0.0.3"
 yfinance = ">=0.2.55,<0.3.0"
-plotly = ">=6.0.1,<7.0.0"
+plotly = ">=4.12.0,<6.0.0"
 schedule = ">=1.2.2,<2.0.0"
 requests = ">=2.32.3,<3.0.0"
 ta = ">=0.11.0,<0.12.0"
@@ -29,7 +29,21 @@ matplotlib = ">=3.10.1,<4.0.0"
 backtrader = "1.9.78.123"
 numpy = ">=1.26.0,<2.0.0"
 setuptools = "^78.1.0"
+vectorbt = {version = "^0.27.2", optional = true}
+seaborn = "^0.13.2"
+nbformat = ">=4.2.0"
+finrl = "^0.3.7"
+gymnasium = "^1.1.1"
+stable-baselines3 = "^2.6.0"
+tensorboard = "^2.19.0"
+scikit-learn = "^1.6.1"
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.extras]
+backtesting = ["vectorbt"]
