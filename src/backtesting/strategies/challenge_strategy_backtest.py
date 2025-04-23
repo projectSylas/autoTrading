@@ -3,23 +3,29 @@
 import backtrader as bt
 import pandas as pd
 import numpy as np # For NaN checks
-import logging
+# import logging # <<< Removed logging import for strategy internal logging
 from typing import Optional # Added for Optional type hint
-from src.utils import strategy_utils # 기존 유틸 함수 사용
+from src.utils import strategy_utils # <<< RE-ADDED
 # pandas-ta import도 필요할 수 있음
-import pandas_ta as ta
-import math
-import sys # Import sys for module checking
+import pandas_ta as ta # <<< RE-ADDED
+import math # <<< RE-ADDED
+# import sys # Import sys for module checking <-- Removed, not used
+import datetime # <<< Added for timestamping in direct file logging
+import os # <<< Added for creating logs directory if needed
+
+# --- Get Logger Name --- 
+# from src.utils.logging_config import APP_LOGGER_NAME # Removed dependency on central logger config for internal logging
+# STRATEGY_LOGGER_NAME = APP_LOGGER_NAME + '.strategy' # Removed
 
 class ChallengeStrategyBacktest(bt.Strategy):
     """
-    Backtrader strategy class implementing the core logic of the Flight Challenge strategy.
-    Focuses on technical indicators and conditions. AI overrides are not included by default.
+    Restored version of the strategy with RSI filter.
+    Focuses on technical indicators and conditions. Uses direct file writing for detailed logs.
     """
-    # Initialize params with placeholder values first
     params = (
-        ('sma_long_period', 20), # Placeholder, will be set in __init__
-        ('sma_short_period', 7),
+        # --- RESTORED PARAMS ---
+        ('sma_long_period', 20), # Placeholder, will be set by runner
+        ('sma_short_period', 7), # Placeholder
         ('rsi_period', 14),      # Placeholder
         ('rsi_threshold', 30),   # Placeholder
         ('volume_avg_period', 20), # Placeholder
@@ -28,325 +34,287 @@ class ChallengeStrategyBacktest(bt.Strategy):
         ('breakout_lookback', 40), # Placeholder
         ('pullback_lookback', 10), # Placeholder
         ('poc_lookback', 50),     # Placeholder
-        ('poc_threshold', 0.005), # Placeholder
-        ('pullback_threshold', 0.01), # Add default for optimization target
-        ('sl_ratio', 0.05),      # Placeholder
-        ('tp_ratio', 0.10),      # Placeholder
+        ('poc_threshold', 0.005), # Placeholder - Runner should set this too?
+        ('pullback_threshold', 0.01), # Placeholder
+        ('sl_ratio', 0.03),      # Set by runner
+        ('tp_ratio', 0.06),      # Set by runner
         ('printlog', True),
     )
 
-    def log(self, txt, dt=None, doprint=False):
-        ''' Logging function for this strategy'''
-        if self.params.printlog or doprint:
-            dt = dt or self.datas[0].datetime.date(0)
-            print(f'{dt.isoformat()}, {txt}')
-
     def __init__(self):
-        # from src.config import settings # <<< REMOVE THIS LINE
+        # --- Direct File Logging Setup ---
+        log_dir = 'logs' # Define log directory
+        os.makedirs(log_dir, exist_ok=True) # Ensure log directory exists
+        # Use a consistent naming scheme, maybe add run timestamp later if needed
+        self.log_file_path = os.path.join(log_dir, f"strategy_debug_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log") 
+        self.log_file = None # Initialize file handle
+        try:
+            self.log_file = open(self.log_file_path, 'a', encoding='utf-8')
+            print(f"[Strategy INFO] Strategy debug log will be written to: {self.log_file_path}") # Console info
+            self._write_log("Strategy __init__ Starting") # Log point 1
+        except Exception as e:
+            print(f"[Strategy ERROR] Failed to open strategy log file {self.log_file_path}: {e}")
 
-        # --- Enhanced Diagnostic Print (Inside __init__) --- 
-        # <<< REMOVE THIS ENTIRE BLOCK >>>
-        # print(f"\n--- Diagnostics inside {self.__class__.__name__}.__init__ ---")
-        # try:
-        #    ...
-        # print("--- End Diagnostics ---\n")
-        # --- End Enhanced Diagnostic Print ---
-
-        # Override params with values from settings <-- This comment is now incorrect
-        # Parameters are now directly populated by backtrader from kwargs passed in runner.
-        # self.params.sma_long_period = settings.CHALLENGE_SMA_PERIOD # <<< No longer needed
-        # self.params.rsi_period = settings.CHALLENGE_RSI_PERIOD       # <<< No longer needed
-        # ... and so on for all lines accessing settings directly ...
-        # Keep the lines assigning default values in params tuple at the class level.
-        # Backtrader uses those defaults if not overridden by kwargs.
-
-        # Keep a reference to the "close" line in the data[0] dataseries
+        # --- Standard Data Lines ---
+        self._write_log("Strategy __init__: Referencing data lines...") # Log point 2a
         self.dataclose = self.datas[0].close
         self.datahigh = self.datas[0].high
         self.datalow = self.datas[0].low
         self.datavolume = self.datas[0].volume
+        self._write_log("Strategy __init__: Data lines referenced.") # Log point 2b
 
-        # To keep track of pending orders and buy price/commission
+        # --- Order Tracking ---
         self.order = None
         self.buyprice = None
         self.buycomm = None
-        self.bar_executed = 0 # Track bar number when order was executed
+        self.bar_executed = 0
+        self.active_sl_price = None # Track active stop loss price
+        self.active_tp_price = None # Track active take profit price
 
-        # --- Define indicators ---
-        # Note: backtrader has built-in indicators which are often preferred for performance.
-        # However, to maintain consistency with strategy.py, we might calculate using pandas on buffered data.
-        # Or, use backtrader indicators that match strategy_utils logic.
+        # --- Backtrader Indicators --- 
+        # Add try-except block for early error detection during indicator initialization
+        try:
+            self._write_log("Strategy __init__: Initializing standard indicators...") # Log point 3
+            # Pass the specific data line (e.g., self.dataclose) instead of self.datas[0]
+            self.sma_long = bt.indicators.SimpleMovingAverage(
+                self.dataclose, period=self.params.sma_long_period) # Use self.dataclose
+            self.sma_short = bt.indicators.SimpleMovingAverage(
+                self.dataclose, period=self.params.sma_short_period) # Use self.dataclose
+            self.rsi = bt.indicators.RelativeStrengthIndex(
+                 self.dataclose, period=self.params.rsi_period) # Use self.dataclose
+            self.volume_sma = bt.indicators.SimpleMovingAverage(
+                 self.datavolume, period=self.params.volume_avg_period) # Use self.datavolume is correct
+            self._write_log("Strategy __init__: Standard indicators initialized.") # Log point 4
+        except Exception as e:
+             # Log critical error if indicator initialization fails
+             self._write_log(f"Strategy __init__: CRITICAL ERROR initializing standard indicators: {e}")
+             print(f"[Strategy CRITICAL ERROR] Initializing standard indicators: {e}")
+             # Re-raise the exception to potentially get a clearer traceback earlier
+             raise
 
-        # Option 1: Use backtrader indicators (Re-enabled)
-        self.sma_long = bt.indicators.SimpleMovingAverage(
-            self.datas[0], period=self.params.sma_long_period)
-        self.sma_short = bt.indicators.SimpleMovingAverage(
-            self.datas[0], period=self.params.sma_short_period)
-        self.rsi = bt.indicators.RelativeStrengthIndex(
-            period=self.params.rsi_period)
-        self.volume_sma = bt.indicators.SimpleMovingAverage(
-             self.datavolume, period=self.params.volume_avg_period)
-        
-        # Assign None temporarily so later code doesn't break immediately
-        # self.sma_long = None # Removed temporary assignment
-        # self.sma_short = None
-        # self.rsi = None
-        # self.volume_sma = None
-        # POC requires custom implementation or approximation within backtrader
-        # Divergence and Breakout/Pullback also require custom logic within next()
-
-        # Placeholder for custom indicators if needed
-        self.poc = None # Will need calculation in next() or precalculation
+        # --- Custom Indicators (Calculated in next()) ---
+        self.poc = None
         self.rsi_divergence = 'none'
         self.pullback_signal = 'none'
 
-        # Example: Pre-calculate pandas_ta indicators if needed (less efficient)
-        # self.df = pd.DataFrame({ # Needs careful handling of data buffering
-        #     'Open': self.datas[0].open.get(size=len(self.datas[0])),
-        #      ...
-        # })
-        # self.poc_series = strategy_utils.calculate_poc(self.df, ...) # Requires careful slicing
+        # Use direct file write for logging
+        self._write_log(f"Strategy Parameters: {self.params.__dict__}")
+        self._write_log("Strategy __init__ Completed")
 
-        logging.info("Challenge Strategy Backtest Initialized.")
-        # --- __init__ 완료 확인 로그 (선택 사항, 일단 유지) ---
-        self.log("--- __init__ completed successfully ---", doprint=True)
+    def _write_log(self, txt):
+        """Writes a log message directly to the strategy's dedicated log file."""
+        if not self.log_file: # Do nothing if file wasn't opened successfully
+            return
+        try:
+            timestamp = self.datas[0].datetime.datetime(0)
+        except IndexError:
+            timestamp = datetime.datetime.now()
+        except Exception:
+            timestamp = datetime.datetime.now()
+        try:
+            log_line = f"{timestamp.isoformat()} - {txt}\n"
+            self.log_file.write(log_line)
+            self.log_file.flush()
+        except Exception as e:
+            print(f"[Strategy ERROR] Failed to write to strategy log file: {e}")
 
+    # --- RESTORED notify_order, notify_trade ---
     def notify_order(self, order):
+        # Use _write_log instead of self.log
         if order.status in [order.Submitted, order.Accepted]:
-            # Buy/Sell order submitted/accepted to/by broker - Nothing to do
+            self._write_log(f"Order Submitted/Accepted: Ref={order.ref}, Type={'Buy' if order.isbuy() else 'Sell'}")
             return
 
-        # Check if an order has been completed
         if order.status in [order.Completed]:
             if order.isbuy():
-                self.log(
+                self._write_log(
                     f'BUY EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}'
                 )
                 self.buyprice = order.executed.price
                 self.buycomm = order.executed.comm
+                self.active_sl_price = self.buyprice * (1.0 - self.params.sl_ratio)
+                self.active_tp_price = self.buyprice * (1.0 + self.params.tp_ratio)
+                self._write_log(f"SL Price set to: {self.active_sl_price:.2f}, TP Price set to: {self.active_tp_price:.2f}")
             else:  # Sell
-                self.log(f'SELL EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}')
+                self._write_log(f'SELL EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}')
+                self.active_sl_price = None
+                self.active_tp_price = None
 
             self.bar_executed = len(self) # Bar number of execution
 
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-            self.log(f'Order Canceled/Margin/Rejected - Status: {order.getstatusname()}')
+            self._write_log(f'Order Failed: {order.getstatusname()} - Ref={order.ref}')
 
-        # Write down: no pending order
-        self.order = None
+        self.order = None # Reset pending order tracker
 
     def notify_trade(self, trade):
         if not trade.isclosed:
             return
-        self.log(f'OPERATION PROFIT, GROSS {trade.pnl:.2f}, NET {trade.pnlcomm:.2f}')
+        # Use _write_log
+        self._write_log(f'OPERATION PROFIT, GROSS {trade.pnl:.2f}, NET {trade.pnlcomm:.2f}')
 
+    # --- RESTORED _get_buffered_df ---
     def _get_buffered_df(self, min_required_len: int) -> Optional[pd.DataFrame]:
-        """
-        Helper function to get buffered data as a pandas DataFrame.
-        Requires enough data points to be loaded in the buffer.
-        """
+        # Use _write_log for errors/debug if needed, but keep it minimal here
+        # Standard logging is removed, rely on print for critical errors here if any
         try:
-            # --- 디버깅용 print 로그 제거 ---
-            # print(f"DEBUG PRINT: --- _get_buffered_df called. Buffer: {len(self.datas[0])}, Required: {min_required_len} ---")
-
             if len(self.datas[0]) < min_required_len:
-                 # --- 디버깅용 print 로그 제거 ---
-                 # print(f"DEBUG PRINT: --- _get_buffered_df returning None (data < required) ---")
+                 # Optional: self._write_log(f"Debug: Not enough data in buffer ({len(self.datas[0])} < {min_required_len})")
                  return None
 
-            # --- 디버깅용 print 로그 제거 ---
-            size = max(min_required_len, len(self.datas[0]))
-            # print(f"DEBUG PRINT: --- _get_buffered_df requesting size: {size} ---")
-
+            size = len(self.datas[0])
             opens = self.datas[0].open.get(size=size)
             highs = self.datas[0].high.get(size=size)
             lows = self.datas[0].low.get(size=size)
             closes = self.datas[0].close.get(size=size)
             volumes = self.datas[0].volume.get(size=size)
             datetimes = self.datas[0].datetime.get(size=size)
-            rsi_values = self.rsi.get(size=size)
-            # print(f"DEBUG PRINT: --- _get_buffered_df data retrieved successfully ---")
+
+            # Check if RSI is available before getting its values
+            if hasattr(self, 'rsi') and self.rsi:
+                rsi_values = self.rsi.get(size=size)
+                if len(rsi_values) > 0 and math.isnan(rsi_values[-1]):
+                     # Optional: self._write_log("Debug: RSI still producing NaN, returning None from buffer.")
+                     return None
+            else:
+                # RSI not initialized or available, return None or handle as needed
+                self._write_log("Warning: RSI indicator not available in _get_buffered_df")
+                # Return df without RSI or return None depending on downstream needs
+                # For now, returning None to avoid errors in functions expecting RSI
+                return None
 
             timestamps = [bt.num2date(dt) for dt in datetimes]
-            # print(f"DEBUG PRINT: --- _get_buffered_df timestamps converted ---")
 
             df = pd.DataFrame({
                 'Open': opens, 'High': highs, 'Low': lows, 'Close': closes,
                 'Volume': volumes, 'RSI': rsi_values
             }, index=pd.DatetimeIndex(timestamps))
-            # print(f"DEBUG PRINT: --- _get_buffered_df DataFrame created successfully ---")
+
+            df.dropna(subset=['RSI'], inplace=True)
+
+            if len(df) < min_required_len:
+                 # Optional: self._write_log(f"Debug: Not enough non-NaN RSI data ({len(df)} < {min_required_len})")
+                 return None
 
             return df
 
         except Exception as e:
-            # --- 예외 발생 시 표준 로깅 사용 ---
-            # print(...) 대신 logging.error 사용
-            logging.error(f"EXCEPTION CAUGHT in _get_buffered_df: Type={type(e).__name__}, Args={e.args}", exc_info=True)
-            # import traceback # traceback import 제거
-            # print(traceback.format_exc()) # print 대신 logging 사용
-            # print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            return None # 예외 발생 시 None 반환
+            # Print critical errors for buffer creation
+            print(f"[Strategy CRITICAL ERROR] in _get_buffered_df: {e}")
+            self._write_log(f"CRITICAL ERROR in _get_buffered_df: {e}") # Also log if possible
+            return None
 
     def next(self):
-        # --- next() 메소드 호출 확인 로그 (선택 사항, 일단 주석 처리) ---
-        # self.log("--- next() method called --- ", doprint=True)
-        # --- 디버깅용 print 로그 제거 ---
-        # print("DEBUG PRINT: --- Starting max_lookback calculation ---")
+        # Use _write_log for all strategy internal logging
+        # self._write_log(f"--- next() called for bar {len(self)} ---") # Optional verbose log
 
-        # --- Calculate Custom Indicators using Buffered Data ---
+        # --- Calculate Custom Indicators ---
         max_lookback_needed = max(
-            self.params.poc_lookback,
-            self.params.divergence_lookback * 2,
-            self.params.breakout_lookback + self.params.pullback_lookback
-        ) + 5
-        # --- 디버깅용 print 로그 제거 ---
-        # print(f"DEBUG PRINT: --- Calculated max_lookback_needed: {max_lookback_needed} ---")
+            getattr(self.params, 'poc_lookback', 50), # Use getattr for safety
+            getattr(self.params, 'divergence_lookback', 28) * 2,
+            getattr(self.params, 'breakout_lookback', 40) + getattr(self.params, 'pullback_lookback', 10)
+        ) + 10 # Add a bit more buffer
 
-        # --- 디버깅용 print 로그 제거 ---
-        # print("DEBUG PRINT: --- About to call _get_buffered_df --- ")
         df_buffer = self._get_buffered_df(max_lookback_needed)
 
-        # Calculate indicators only if we have enough data
         if df_buffer is not None:
-            # 1. Calculate POC
             try:
                 self.poc = strategy_utils.calculate_poc(df_buffer, lookback=self.params.poc_lookback)
             except Exception as e:
-                self.log(f"Error calculating POC: {e}")
+                self._write_log(f"Error calculating POC: {e}")
                 self.poc = None
-
-            # 2. Detect Divergence
             try:
                 self.rsi_divergence = strategy_utils.detect_rsi_divergence(
-                    df_buffer,
-                    lookback=self.params.divergence_lookback
+                    df_buffer, lookback=self.params.divergence_lookback
                 )
             except Exception as e:
-                 self.log(f"Error detecting RSI Divergence: {e}")
+                 self._write_log(f"Error detecting RSI Divergence: {e}")
                  self.rsi_divergence = 'none'
-
-            # 3. Detect Breakout/Pullback
             try:
                 self.pullback_signal = strategy_utils.detect_trendline_breakout_pullback(
                     df_buffer,
                     lookback_breakout=self.params.breakout_lookback,
-                    lookback_pullback=self.params.pullback_lookback
+                    lookback_pullback=self.params.pullback_lookback,
+                    pullback_threshold=self.params.pullback_threshold
                 )
             except Exception as e:
-                 self.log(f"Error detecting Breakout/Pullback: {e}")
+                 self._write_log(f"Error detecting Breakout/Pullback: {e}")
                  self.pullback_signal = 'none'
         else:
-             # Not enough data yet, reset custom indicators
              self.poc = None
              self.rsi_divergence = 'none'
              self.pullback_signal = 'none'
-        
-        # <<< Logging for Custom Indicators (self.log 복원) >>>
-        poc_str = f"{self.poc:.4f}" if self.poc is not None else "N/A"
-        self.log(f"Custom Indicators: POC={poc_str}, RSI Div={self.rsi_divergence}, Pullback={self.pullback_signal}")
+             # self._write_log("Not enough data for custom indicator calculation.") # Reduce noise
+             return # Skip rest of logic if buffer not ready
 
-        # Access standard indicator values (calculated by backtrader)
+        # --- Log Custom Indicator Values (Reduced frequency maybe?) ---
+        # poc_val = f"{self.poc:.4f}" if self.poc is not None else "N/A"
+        # self._write_log(f"Custom Indicators: POC={poc_val}, RSI Div={self.rsi_divergence}, Pullback={self.pullback_signal}")
+
+        # --- Access Standard Indicator Values ---
         current_close = self.dataclose[0]
         current_volume = self.datavolume[0]
-        sma_long_val = self.sma_long[0] # Ensure sma_long is defined if used
-        sma_short_val = self.sma_short[0]
-        rsi_val = self.rsi[0]
-        avg_volume_val = self.volume_sma[0]
+        try:
+            sma_long_val = self.sma_long[0]
+            sma_short_val = self.sma_short[0]
+            rsi_val = self.rsi[0]
+            volume_sma_val = self.volume_sma[0]
+        except IndexError:
+            # self._write_log("Standard indicators not ready yet.") # Reduce noise
+            return
 
-        # --- Condition Check ---
+        # --- Log Standard Indicator Values (Reduced frequency maybe?) ---
+        # self._write_log(f"Standard Indicators: Close={current_close:.2f}, Vol={current_volume:.0f}, SMA{self.params.sma_short_period}={sma_short_val:.2f}, SMA_Long={sma_long_val:.2f}, RSI={rsi_val:.1f}, VolSMA={volume_sma_val:.0f}")
+
+        # --- Condition Checks ---
+        volume_surge = current_volume > (volume_sma_val * self.params.volume_surge_ratio) if volume_sma_val and volume_sma_val != 0 else False
+        close_below_sma_short = current_close < sma_short_val
+        close_near_poc = abs(current_close - self.poc) / current_close < self.params.poc_threshold if self.poc is not None else False
+        is_bullish_divergence = self.rsi_divergence == 'bullish'
+        is_bearish_divergence = self.rsi_divergence == 'bearish'
+        is_bullish_pullback = self.pullback_signal == 'bullish_pullback'
+        is_bearish_breakdown = self.pullback_signal == 'bearish_breakdown'
+
+        # --- Log Conditions (Reduced frequency maybe?) ---
+        # self._write_log(f"Conditions: VolSurge={volume_surge}, Close<SMA{self.params.sma_short_period}={close_below_sma_short}, BearDiv={is_bearish_divergence}, BullDiv={is_bullish_divergence}, BearPull={is_bearish_breakdown}, BullPull={is_bullish_pullback}, CloseNearPOC={close_near_poc}")
+
+        # --- Trading Logic ---
         if self.order:
-             # --- 디버깅용 print 로그 제거 ---
-             # print(f"DEBUG PRINT: next() returning early because self.order is not None: {self.order}")
-             return
+            # self._write_log("Pending order exists, skipping new order.") # Reduce noise
+            return
 
         if not self.position:
-            decision = 'hold'
-            reason = "No signal (or insufficient data)"
-            side = None
+            # --- BUY Logic (with RSI Filter) ---
+            final_buy_signal = is_bullish_pullback and (rsi_val > 40 and rsi_val < 60)
+            self._write_log(f"BUY CHECK: BullPull={is_bullish_pullback}, RSI={rsi_val:.1f} (Filter: 40-60), VolSurge={volume_surge}, BullDiv={is_bullish_divergence} => FinalBuy={final_buy_signal}")
 
-            indicators_valid = all([
-                not math.isnan(current_close),
-                not math.isnan(current_volume),
-                not math.isnan(sma_short_val),
-                not math.isnan(rsi_val),
-                avg_volume_val is not None and not math.isnan(avg_volume_val) and avg_volume_val > 0,
-                self.pullback_signal != 'none'
-            ])
-            # <<< Logging for indicator validity (self.log 복원) >>>
-            self.log(f"Indicators Valid Check: {indicators_valid}")
+            if final_buy_signal:
+                self._write_log(f'BUY CREATE, Close={current_close:.2f}')
+                self.order = self.buy()
+                self.active_sl_price = None
+                self.active_tp_price = None
 
-            poc_valid_and_above = self.poc is not None and not math.isnan(self.poc) and current_close > self.poc
+        else: # In market
+            # --- SELL Logic ---
+            sell_sl_hit = self.active_sl_price is not None and current_close < self.active_sl_price
+            sell_tp_hit = self.active_tp_price is not None and current_close > self.active_tp_price
+            sell_signal = is_bearish_breakdown
+            final_sell_signal = sell_sl_hit or sell_tp_hit or sell_signal
 
-            if indicators_valid:
-                # Bullish Entry Conditions
-                is_bullish_pullback = self.pullback_signal == 'bullish_pullback'
-                is_volume_surge = current_volume > (avg_volume_val * self.params.volume_surge_ratio)
-                is_above_sma7 = current_close > sma_short_val
-                is_bullish_divergence = self.rsi_divergence == 'bullish'
+            sl_str = f"{self.active_sl_price:.2f}" if self.active_sl_price is not None else "N/A"
+            tp_str = f"{self.active_tp_price:.2f}" if self.active_tp_price is not None else "N/A"
+            self._write_log(f"SELL CHECK: Close={current_close:.2f}, SL Price={sl_str}, TP Price={tp_str}, SL Hit={sell_sl_hit}, TP Hit={sell_tp_hit}, Signal={sell_signal} (BearBreak only) => FinalSell={final_sell_signal}")
 
-                # <<< Conditional Logging for Individual Conditions (self.log 유지) >>>
-                if is_bullish_pullback or is_volume_surge:
-                    self.log(f"CONDITIONS MET CHECK: is_bullish_pullback={is_bullish_pullback}, is_volume_surge={is_volume_surge}, is_above_sma7={is_above_sma7}, poc_valid_and_above={poc_valid_and_above}, is_bullish_divergence={is_bullish_divergence}")
+            if final_sell_signal:
+                self._write_log(f'SELL CREATE, Close={current_close:.2f}')
+                self.order = self.sell()
 
-                # Combine conditions for Buy (is_bullish_pullback 복원됨)
-                buy_condition = (
-                    is_bullish_pullback and
-                    is_volume_surge and
-                    is_above_sma7 and
-                    (self.poc is None or poc_valid_and_above)
-                    # and is_bullish_divergence
-                )
-                
-                # <<< Conditional Logging for Final Buy Condition (self.log 유지) >>>
-                if buy_condition or (is_bullish_pullback or is_volume_surge):
-                    self.log(f"Final Buy Condition Check: {buy_condition}")
-
-                if buy_condition:
-                    decision = 'buy'
-                    reason = f"Bullish Pullback + Vol Surge + >SMA7"
-                    if poc_valid_and_above: reason += " + >POC"
-                    # if is_bullish_divergence: reason += " + Bullish Div" # 다이버전스 조건은 아직 미사용
-                    side = 'buy'
-            else:
-                 reason = "Insufficient data or invalid indicators"
-                 self.log(f"HOLD: {reason}")
-
-            if decision == 'buy':
-                self.log(f'BUY CREATE, {current_close:.2f} - Reason: {reason}')
-                self.order = self.buy() # Sizer 사용
-        else: # We are in the market
-            # --- Exit Logic (Restored) ---
-            exit_reason = None
-            indicators_valid_exit = all([
-                not math.isnan(current_close),
-                not math.isnan(sma_short_val),
-                self.rsi_divergence != 'none', # Need divergence signal
-                self.pullback_signal != 'none' # Need pullback/breakdown signal
-            ])
-
-            # Check Take Profit
-            if self.position.size > 0 and self.buyprice is not None and current_close >= self.buyprice * (1.0 + self.params.tp_ratio):
-                exit_reason = f"Take Profit (Long) at {current_close:.2f}"
-            # Check Stop Loss
-            elif self.position.size > 0 and self.buyprice is not None and current_close <= self.buyprice * (1.0 - self.params.sl_ratio):
-                exit_reason = f"Stop Loss (Long) at {current_close:.2f}"
-            # Check Signal-based Exit
-            elif self.position.size > 0 and indicators_valid_exit and exit_reason is None:
-                is_bearish_divergence = self.rsi_divergence == 'bearish'
-                is_bearish_breakdown = self.pullback_signal == 'bearish_breakdown'
-                is_below_sma7 = current_close < sma_short_val
-
-                if is_bearish_divergence or is_bearish_breakdown or is_below_sma7:
-                    reason_detail = []
-                    if is_bearish_divergence: reason_detail.append("Bearish Div")
-                    if is_bearish_breakdown: reason_detail.append("Bearish Breakdown")
-                    if is_below_sma7: reason_detail.append("<SMA7")
-                    exit_reason = f"Signal Exit: { ' & '.join(reason_detail)}"
-
-            if exit_reason:
-                self.log(f'CLOSE CREATE (Exit), {current_close:.2f} - Reason: {exit_reason}')
-                self.order = self.close()
-
-    # Optional: Implement stop() method for end-of-run cleanup or analysis
-    # def stop(self):
-    #     self.log(f'(SMA Long {self.params.sma_long_period:d}, SMA Short {self.params.sma_short_period:d}, RSI {self.params.rsi_period:d}) Ending Value {self.broker.getvalue():.2f}', doprint=True)
+    def stop(self):
+        """Close the strategy log file when the backtest stops."""
+        self._write_log("Strategy Stop called.")
+        if self.log_file:
+            try:
+                self.log_file.close()
+                print(f"[Strategy INFO] Strategy debug log file closed: {self.log_file_path}")
+            except Exception as e:
+                print(f"[Strategy ERROR] Failed to close strategy log file {self.log_file_path}: {e}")

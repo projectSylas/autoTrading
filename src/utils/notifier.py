@@ -2,11 +2,24 @@ import requests
 import json
 import logging
 import pandas as pd # 결과 DataFrame을 테이블 형태로 보내기 위해
-from src.config.settings import SLACK_WEBHOOK_URL
-from datetime import datetime
+import os
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Import settings instance directly
+try:
+    from src.config.settings import settings
+    if settings is None:
+        raise ImportError("Settings object is None after import.")
+except ImportError:
+    # Fallback if settings cannot be imported
+    settings = type('obj', (object,), {
+        'SLACK_WEBHOOK_URL': os.getenv("SLACK_WEBHOOK_URL") # Use getenv for fallback
+    })()
+    logging.getLogger(__name__).warning("Could not import settings instance. Using basic os.getenv fallbacks for Slack Webhook.")
+
+# Setup logging
+logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Slack 메시지 섹션 구성 도우미 함수
 def create_slack_block(title: str, text: str, block_type: str = "section") -> dict:
@@ -48,99 +61,84 @@ def format_dataframe_for_slack(df: pd.DataFrame, max_rows: int = 10) -> str:
     # 코드 블록으로 감싸서 반환
     return f"```\n{table_str}\n```"
 
-
-def send_slack_notification(
-    message_title: str,
-    message_body: str = "", # 일반 텍스트 메시지 (선택 사항)
-    blocks: list | None = None, # 사용자 정의 블록 (선택 사항)
-    level: str = "info" # 메시지 레벨 ('info', 'warning', 'error', 'success')
-) -> bool:
-    """통합된 형식으로 Slack 알림을 보냅니다.
+# --- Slack Notification Function ---
+def send_slack_notification(message: str, channel: str | None = None) -> bool:
+    """
+    Sends a message to a specified Slack channel using a webhook URL from settings.
 
     Args:
-        message_title (str): 메시지의 주 제목 (항상 표시됨).
-        message_body (str): 간단한 텍스트 본문 (blocks가 없으면 사용됨).
-        blocks (list | None): Slack Block Kit 블록 리스트. None이면 기본 블록 생성.
-        level (str): 메시지 중요도 ('info', 'warning', 'error', 'success'). 아이콘/색상에 영향.
+        message (str): The message text to send.
+        channel (str | None): Optional. The specific channel to send to (e.g., "#trading-alerts").
+                               If None, sends to the webhook's default channel.
 
     Returns:
-        bool: 메시지 전송 성공 여부.
+        bool: True if the message was sent successfully (HTTP 200), False otherwise.
     """
-    if not SLACK_WEBHOOK_URL:
-        logging.warning("Slack Webhook URL이 설정되지 않아 알림을 보낼 수 없습니다.")
+    webhook_url = settings.SLACK_WEBHOOK_URL
+
+    if not webhook_url:
+        logger.warning("SLACK_WEBHOOK_URL is not configured in settings/.env. Cannot send Slack notification.")
         return False
 
-    # 레벨에 따른 아이콘/색상 설정 (간단 예시)
-    icon_emoji = ":information_source:" # info (default)
-    if level == "warning":
-        icon_emoji = ":warning:"
-    elif level == "error":
-        icon_emoji = ":fire:"
-    elif level == "success":
-        icon_emoji = ":white_check_mark:"
+    payload = {
+        "text": message
+    }
+    if channel:
+        payload["channel"] = channel
 
-    # 기본 헤더 블록 생성
-    final_blocks = [{
-        "type": "header",
-        "text": {
-            "type": "plain_text",
-            "text": f"{icon_emoji} {message_title}",
-            "emoji": True
-        }
-    }]
-
-    # 사용자 정의 블록이 있으면 추가
-    if blocks:
-        final_blocks.extend(blocks)
-    # 사용자 정의 블록 없고 메시지 본문만 있으면, 기본 섹션 블록 추가
-    elif message_body:
-        final_blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": message_body
-            }
-        })
-
-    # 푸터 (시간 정보 추가)
-    final_blocks.append({
-        "type": "context",
-        "elements": [
-            {
-                "type": "mrkdwn",
-                "text": f"발송 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            }
-        ]
-    })
-
-    # Slack Payload 구성
-    slack_payload = {
-        "blocks": final_blocks
+    headers = {
+        'Content-Type': 'application/json'
     }
 
     try:
-        response = requests.post(SLACK_WEBHOOK_URL, data=json.dumps(slack_payload),
-                                 headers={'Content-Type': 'application/json'}, timeout=10)
-        response.raise_for_status() # HTTP 오류 발생 시 예외 발생
-        logging.info(f"Slack 알림 전송 성공: {message_title}")
-        return True
+        logger.debug(f"Sending Slack notification: {message[:50]}... to channel: {channel or 'default'}")
+        response = requests.post(webhook_url, headers=headers, data=json.dumps(payload), timeout=10)
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+        if response.status_code == 200:
+            logger.info(f"Successfully sent Slack notification to {channel or 'default channel'}.")
+            return True
+        else:
+            # This case might not be reached due to raise_for_status, but kept for clarity
+            logger.error(f"Failed to send Slack notification. Status Code: {response.status_code}, Response: {response.text}")
+            return False
+            
     except requests.exceptions.RequestException as e:
-        logging.error(f"Slack 알림 전송 실패: {e}")
+        logger.error(f"Error sending Slack notification: {e}", exc_info=True)
         return False
     except Exception as e:
-        logging.error(f"Slack 알림 처리 중 예외 발생: {e}", exc_info=True)
+        logger.error(f"Unexpected error during Slack notification: {e}", exc_info=True)
         return False
+
+# Example usage:
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    logger.info("Testing Slack Notifier...")
+    
+    if settings.SLACK_WEBHOOK_URL:
+        print(f"SLACK_WEBHOOK_URL found: {settings.SLACK_WEBHOOK_URL[:30]}...")
+        test_message = "✅ Test message from notifier.py!"
+        # Send to default channel
+        success_default = send_slack_notification(test_message)
+        print(f"Sent to default channel: {'Success' if success_default else 'Failed'}")
+        
+        # Send to a specific channel (replace '#your-test-channel' if needed)
+        # test_channel = "#your-test-channel"
+        # success_specific = send_slack_notification(f"{test_message} (to specific channel)", channel=test_channel)
+        # print(f"Sent to {test_channel}: {'Success' if success_specific else 'Failed'}")
+    else:
+        print("SLACK_WEBHOOK_URL not set in .env. Skipping test notification.")
 
 # --- 사용 예시 (테스트용) ---
 if __name__ == "__main__":
     # 1. 간단한 정보 메시지
-    send_slack_notification("시스템 정보", "자동매매 시스템이 시작되었습니다.", level="info")
+    send_slack_notification("시스템 정보", level="info")
 
     # 2. 경고 메시지
-    send_slack_notification("API 연결 경고", "Binance API 응답 속도가 느립니다.", level="warning")
+    send_slack_notification("API 연결 경고", level="warning")
 
     # 3. 오류 메시지
-    send_slack_notification("주문 실패", "Alpaca 주문 중 오류가 발생했습니다. 상세 로그를 확인하세요.", level="error")
+    send_slack_notification("주문 실패", level="error")
 
     # 4. 성공 메시지 (결과 포함)
     backtest_result = {
@@ -151,7 +149,7 @@ if __name__ == "__main__":
         "승률": "65%"
     }
     result_text = "\n".join([f"- {k}: {v}" for k, v in backtest_result.items()])
-    send_slack_notification("백테스트 결과 요약", message_body=f"백테스트가 성공적으로 완료되었습니다.\n{result_text}", level="success")
+    send_slack_notification(f"백테스트 결과 요약\n{result_text}", level="success")
 
     # 5. 복잡한 블록 구조 사용 (DataFrame 결과 포함)
     sentiment_df = pd.DataFrame({

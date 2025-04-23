@@ -2,185 +2,206 @@ import os
 from dotenv import load_dotenv
 import logging
 from pydantic_settings import BaseSettings
-from pydantic import ValidationError # Import ValidationError
+from pydantic import Field, ValidationError
+from typing import List, Optional # Import List and Optional
 
-# .env 파일 로드 (파일이 없어도 오류 발생 안 함)
-try:
-    dotenv_loaded = load_dotenv()
-    logging.info(f"[{__name__}] load_dotenv() executed. Found .env file: {dotenv_loaded}")
-except Exception as e:
-    logging.error(f"[{__name__}] Error during load_dotenv(): {e}")
+# Setup logging
+logger = logging.getLogger(__name__)
+# Basic config, assuming a central logger might be set up elsewhere eventually
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- Load Environment Variables --- 
+dotenv_path = os.path.join(os.path.dirname(__file__), '../../.env') 
+loaded = load_dotenv(dotenv_path=dotenv_path, override=True) # override=True ensures .env takes precedence
 
+if loaded:
+    logger.info(f".env file loaded successfully from: {dotenv_path}")
+else:
+    logger.warning(f".env file not found at expected location: {dotenv_path}. Relying on system environment variables or defaults.")
+
+# --- Project Paths --- 
+# Moved path definitions here for clarity before Settings class
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')) 
+DEFAULT_MODEL_SAVE_DIR = os.path.join(PROJECT_ROOT, "models")
+DEFAULT_DATA_SAVE_DIR = os.path.join(PROJECT_ROOT, "data")
+DEFAULT_LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
+DEFAULT_MODEL_WEIGHTS_DIR = os.path.join(PROJECT_ROOT, "model_weights")
+
+# --- Settings Class using Pydantic BaseSettings --- 
 class Settings(BaseSettings):
-    # --- API Keys ---
-    ALPACA_API_KEY: str = os.getenv("ALPACA_API_KEY", "")
-    ALPACA_SECRET_KEY: str = os.getenv("ALPACA_SECRET_KEY", "")
-    ALPACA_PAPER: bool = os.getenv("ALPACA_PAPER", "True").lower() == "true"
-    BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
-    BINANCE_SECRET_KEY: str = os.getenv("BINANCE_SECRET_KEY", "")
-    NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
-    SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")
+    # Pydantic will automatically look for environment variables (case-insensitive)
+    # matching the field names, or load from .env if python-dotenv is used.
 
-    # --- Database ---
-    DB_HOST: str = os.getenv("DB_HOST", "db")
-    DB_PORT: int = int(os.getenv("DB_PORT", "5433"))
-    DB_USER: str = os.getenv("DB_USER", "trading_user")
-    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "trading_password")
-    DB_NAME: str = os.getenv("DB_NAME", "trading_db")
+    # --- API Keys --- 
+    # Field(...) can be used for validation, default values if env var is missing
+    # Use default=None if the key is truly optional, otherwise it's required.
+    NEWS_API_KEY: str = Field(..., validation_alias='NEWS_API_KEY') # ... means required
+    ALPACA_API_KEY_ID: str = Field(..., validation_alias='ALPACA_API_KEY_ID')
+    ALPACA_SECRET_KEY: str = Field(..., validation_alias='ALPACA_SECRET_KEY')
+    # Default to paper trading URL if ALPACA_BASE_URL is not set in env
+    ALPACA_BASE_URL: str = Field(default="https://paper-api.alpaca.markets", validation_alias='ALPACA_BASE_URL')
+    # Optional API Keys - provide default empty string if not set
+    BINANCE_API_KEY: str = Field(default="", validation_alias='BINANCE_API_KEY')
+    BINANCE_SECRET_KEY: str = Field(default="", validation_alias='BINANCE_SECRET_KEY')
+    SLACK_WEBHOOK_URL: str = Field(default="", validation_alias='SLACK_WEBHOOK_URL') # Default is empty string
 
-    # --- AI Model Hyperparameters (Existing) ---
-    PREDICTOR_SYMBOL: str = os.getenv("PREDICTOR_SYMBOL", "BTCUSDT")
-    SEQ_LEN: int = int(os.getenv("SEQ_LEN", "60"))
-    HIDDEN_DIM: int = int(os.getenv("HIDDEN_DIM", "128"))
-    N_LAYERS: int = int(os.getenv("N_LAYERS", "2"))
-    DROPOUT: float = float(os.getenv("DROPOUT", "0.2"))
-    LEARNING_RATE: float = float(os.getenv("LEARNING_RATE", "0.001"))
-    EPOCHS: int = int(os.getenv("EPOCHS", "50"))
-    BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "32"))
-    MODEL_TYPE: str = os.getenv("MODEL_TYPE", "LSTM") # LSTM or Transformer
-    MODEL_SAVE_PATH: str = os.getenv("MODEL_SAVE_PATH", "./model_weights/price_predictor.pt")
+    # --- Paths --- 
+    # Use Field with default factory for dynamic paths
+    MODEL_SAVE_DIR: str = Field(default=DEFAULT_MODEL_SAVE_DIR, validation_alias='MODEL_SAVE_DIR')
+    DATA_SAVE_DIR: str = Field(default=DEFAULT_DATA_SAVE_DIR, validation_alias='DATA_SAVE_DIR')
+    LOG_DIR: str = Field(default=DEFAULT_LOG_DIR, validation_alias='LOG_DIR')
+    MODEL_WEIGHTS_DIR: str = Field(default=DEFAULT_MODEL_WEIGHTS_DIR, validation_alias='MODEL_WEIGHTS_DIR')
+    # Derived paths based on the base directories
+    @property
+    def FINRL_MODEL_DIR(self) -> str:
+        return os.path.join(self.MODEL_SAVE_DIR, "finrl")
+    @property
+    def FREQAI_MODEL_DIR(self) -> str:
+        return os.path.join(self.MODEL_SAVE_DIR, "freqai")
+    @property
+    def SENTIMENT_CACHE_DIR(self) -> str:
+        return os.path.join(self.DATA_SAVE_DIR, "sentiment_cache")
 
-    RL_ENV_SYMBOL: str = os.getenv("RL_ENV_SYMBOL", "BTCUSDT")
-    RL_TIMESTEPS: int = int(os.getenv("RL_TIMESTEPS", "100000"))
-    RL_ALGORITHM: str = os.getenv("RL_ALGORITHM", "PPO")
-    RL_POLICY: str = os.getenv("RL_POLICY", "MlpPolicy")
-    RL_LEARNING_RATE: float = float(os.getenv("RL_LEARNING_RATE", "0.0003"))
-    RL_BATCH_SIZE: int = int(os.getenv("RL_BATCH_SIZE", "64"))
-    RL_MODEL_SAVE_PATH: str = os.getenv("RL_MODEL_SAVE_PATH", "./model_weights/rl_model.zip")
-    RL_NORMALIZATION_REFERENCE_PRICE: float | None = os.getenv("RL_NORMALIZATION_REFERENCE_PRICE")
-    if RL_NORMALIZATION_REFERENCE_PRICE is not None:
-        RL_NORMALIZATION_REFERENCE_PRICE = float(RL_NORMALIZATION_REFERENCE_PRICE)
-
-    # --- Hugging Face Models --- New Settings
-    HF_SENTIMENT_MODEL_NAME: str = os.getenv("HF_SENTIMENT_MODEL_NAME", "ProsusAI/finbert")
-    HF_TIMESERIES_MODEL_NAME: str = os.getenv("HF_TIMESERIES_MODEL_NAME", "google/timesfm-1.0-200m")
-    MODEL_WEIGHTS_DIR: str = os.getenv("MODEL_WEIGHTS_DIR", "./model_weights/")
-    ENABLE_HF_SENTIMENT: bool = os.getenv("ENABLE_HF_SENTIMENT", "True").lower() == "true"
-    ENABLE_HF_TIMESERIES: bool = os.getenv("ENABLE_HF_TIMESERIES", "False").lower() == "true"
-    SENTIMENT_NEUTRAL_THRESHOLD_LOW: float = float(os.getenv("SENTIMENT_NEUTRAL_THRESHOLD_LOW", "0.4"))
-    SENTIMENT_NEUTRAL_THRESHOLD_HIGH: float = float(os.getenv("SENTIMENT_NEUTRAL_THRESHOLD_HIGH", "0.6"))
-    SENTIMENT_CUTOFF_SCORE: float = float(os.getenv("SENTIMENT_CUTOFF_SCORE", "0.35"))
-    HF_MAX_SEQ_LENGTH: int = int(os.getenv("HF_MAX_SEQ_LENGTH", "512"))
-    HF_DEVICE: str = os.getenv("HF_DEVICE", "auto") # 'auto', 'cuda', 'cpu'
-
-    # --- Strategy Parameters ---
-    # .env 파일에 없으면 기본값 사용
-    CORE_ASSETS: list = os.getenv("CORE_ASSETS", "SPY,QQQ,GLD,SGOV,XLP").split(',')
-    CORE_RSI_THRESHOLD: int = int(os.getenv("CORE_RSI_THRESHOLD", "30"))
-    CORE_VIX_THRESHOLD: int = int(os.getenv("CORE_VIX_THRESHOLD", "25"))
-    CORE_REBALANCE_THRESHOLD: float = float(os.getenv("CORE_REBALANCE_THRESHOLD", "0.15"))
-    CHALLENGE_SYMBOLS: str = os.getenv("CHALLENGE_SYMBOLS", "BTCUSDT,ETHUSDT")
-    CHALLENGE_LEVERAGE: int = int(os.getenv("CHALLENGE_LEVERAGE", "10"))
-    CHALLENGE_SEED_PERCENTAGE: float = float(os.getenv("CHALLENGE_SEED_PERCENTAGE", "0.05"))
-    CHALLENGE_TP_RATIO: float = float(os.getenv("CHALLENGE_TP_RATIO", 0.03))
-    CHALLENGE_SL_RATIO: float = float(os.getenv("CHALLENGE_SL_RATIO", "0.05"))
-    CHALLENGE_SMA_PERIOD: int = int(os.getenv("CHALLENGE_SMA_PERIOD", "20"))
-    CHALLENGE_RSI_PERIOD: int = int(os.getenv("CHALLENGE_RSI_PERIOD", "14"))
-    CHALLENGE_RSI_THRESHOLD: int = int(os.getenv("CHALLENGE_RSI_THRESHOLD", "30"))
-    CHALLENGE_INTERVAL: str = os.getenv("CHALLENGE_INTERVAL", "1h")
-    CHALLENGE_LOOKBACK: str = os.getenv("CHALLENGE_LOOKBACK", "30d")
-    CHALLENGE_RISK_PER_TRADE: float = float(os.getenv("CHALLENGE_RISK_PER_TRADE", "0.01"))
-
-    # --- Newly Added Challenge Parameters ---
-    CHALLENGE_VOLUME_AVG_PERIOD: int = int(os.getenv("CHALLENGE_VOLUME_AVG_PERIOD", "20"))
-    CHALLENGE_VOLUME_SURGE_RATIO: float = float(os.getenv("CHALLENGE_VOLUME_SURGE_RATIO", "2.0"))
-    CHALLENGE_DIVERGENCE_LOOKBACK: int = int(os.getenv("CHALLENGE_DIVERGENCE_LOOKBACK", "28"))
-    CHALLENGE_BREAKOUT_LOOKBACK: int = int(os.getenv("CHALLENGE_BREAKOUT_LOOKBACK", "40"))
-    CHALLENGE_PULLBACK_LOOKBACK: int = int(os.getenv("CHALLENGE_PULLBACK_LOOKBACK", 10))
-    CHALLENGE_PULLBACK_THRESHOLD: float = float(os.getenv("CHALLENGE_PULLBACK_THRESHOLD", 0.01))
-    CHALLENGE_POC_LOOKBACK: int = int(os.getenv("CHALLENGE_POC_LOOKBACK", 50))
-    CHALLENGE_POC_THRESHOLD: float = float(os.getenv("CHALLENGE_POC_THRESHOLD", 0.7))
-    LOG_OVERRIDES_TO_DB: bool = os.getenv("LOG_OVERRIDES_TO_DB", "False").lower() == "true"
-    CHALLENGE_SYMBOL_DELAY_SECONDS: float = float(os.getenv("CHALLENGE_SYMBOL_DELAY_SECONDS", "1.0"))
+    # --- Training/Strategy Parameters --- 
+    # Use Field for type hints and defaults
+    FINRL_DEFAULT_TIMESTEPS: int = Field(default=20000, validation_alias='FINRL_DEFAULT_TIMESTEPS')
+    FINRL_INITIAL_AMOUNT: float = Field(default=100000.0, validation_alias='FINRL_INITIAL_AMOUNT')
+    FINRL_HMAX: int = Field(default=100, validation_alias='FINRL_HMAX')
+    FINRL_TRANSACTION_COST: float = Field(default=0.001, validation_alias='FINRL_TRANSACTION_COST')
+    FINRL_REWARD_SCALING: float = Field(default=1e-4, validation_alias='FINRL_REWARD_SCALING')
+    
+    FREQAI_DEFAULT_IDENTIFIER: str = Field(default="default_freqai_id", validation_alias='FREQAI_DEFAULT_IDENTIFIER')
+    FREQAI_LABEL_PERIOD_CANDLES: int = Field(default=24, validation_alias='FREQAI_LABEL_PERIOD_CANDLES')
+    
+    # --- Strategy Parameters from Notepad --- 
+    # Note: Use Optional[List[str]] for lists loaded from comma-separated env var
+    CORE_ASSETS: List[str] = Field(default_factory=lambda: "SPY,QQQ,GLD,SGOV,XLP".split(','), validation_alias='CORE_ASSETS')
+    CORE_RSI_THRESHOLD: int = Field(default=30, validation_alias='CORE_RSI_THRESHOLD')
+    CORE_VIX_THRESHOLD: int = Field(default=25, validation_alias='CORE_VIX_THRESHOLD')
+    CORE_REBALANCE_THRESHOLD: float = Field(default=0.15, validation_alias='CORE_REBALANCE_THRESHOLD')
+    # Assuming CHALLENGE_SYMBOLS is a comma-separated string in env
+    CHALLENGE_SYMBOLS: List[str] = Field(default_factory=lambda: "BTCUSDT,ETHUSDT".split(','), validation_alias='CHALLENGE_SYMBOLS') 
+    CHALLENGE_LEVERAGE: int = Field(default=10, validation_alias='CHALLENGE_LEVERAGE')
+    CHALLENGE_SEED_PERCENTAGE: float = Field(default=0.05, validation_alias='CHALLENGE_SEED_PERCENTAGE')
+    CHALLENGE_TP_RATIO: float = Field(default=0.06, validation_alias='CHALLENGE_TP_RATIO')
+    CHALLENGE_SL_RATIO: float = Field(default=0.03, validation_alias='CHALLENGE_SL_RATIO')
+    CHALLENGE_SMA_PERIOD: int = Field(default=7, validation_alias='CHALLENGE_SMA_PERIOD')
+    CHALLENGE_RSI_PERIOD: int = Field(default=14, validation_alias='CHALLENGE_RSI_PERIOD')
+    CHALLENGE_RSI_THRESHOLD: int = Field(default=30, validation_alias='CHALLENGE_RSI_THRESHOLD')
+    CHALLENGE_INTERVAL: str = Field(default="1h", validation_alias='CHALLENGE_INTERVAL')
+    CHALLENGE_LOOKBACK: str = Field(default="30d", validation_alias='CHALLENGE_LOOKBACK')
+    CHALLENGE_RISK_PER_TRADE: float = Field(default=0.01, validation_alias='CHALLENGE_RISK_PER_TRADE')
+    CHALLENGE_VOLUME_AVG_PERIOD: int = Field(default=20, validation_alias='CHALLENGE_VOLUME_AVG_PERIOD')
+    CHALLENGE_VOLUME_SURGE_RATIO: float = Field(default=2.0, validation_alias='CHALLENGE_VOLUME_SURGE_RATIO')
+    CHALLENGE_DIVERGENCE_LOOKBACK: int = Field(default=28, validation_alias='CHALLENGE_DIVERGENCE_LOOKBACK')
+    CHALLENGE_BREAKOUT_LOOKBACK: int = Field(default=40, validation_alias='CHALLENGE_BREAKOUT_LOOKBACK')
+    CHALLENGE_PULLBACK_LOOKBACK: int = Field(default=10, validation_alias='CHALLENGE_PULLBACK_LOOKBACK')
+    CHALLENGE_PULLBACK_THRESHOLD: float = Field(default=0.01, validation_alias='CHALLENGE_PULLBACK_THRESHOLD')
+    CHALLENGE_POC_LOOKBACK: int = Field(default=50, validation_alias='CHALLENGE_POC_LOOKBACK')
+    CHALLENGE_POC_THRESHOLD: float = Field(default=0.7, validation_alias='CHALLENGE_POC_THRESHOLD')
+    LOG_OVERRIDES_TO_DB: bool = Field(default=False, validation_alias='LOG_OVERRIDES_TO_DB')
+    CHALLENGE_SYMBOL_DELAY_SECONDS: float = Field(default=1.0, validation_alias='CHALLENGE_SYMBOL_DELAY_SECONDS')
+    
+    # --- Database --- 
+    DB_HOST: str = Field(default="db", validation_alias='DB_HOST')
+    DB_PORT: int = Field(default=5433, validation_alias='DB_PORT')
+    DB_USER: str = Field(default="trading_user", validation_alias='DB_USER')
+    DB_PASSWORD: str = Field(default="trading_password", validation_alias='DB_PASSWORD')
+    DB_NAME: str = Field(default="trading_db", validation_alias='DB_NAME')
 
     # --- Log Level --- 
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    LOG_LEVEL: str = Field(default="INFO", validation_alias='LOG_LEVEL')
+    
+    # --- Slack Channels (Optional defaults) ---
+    SLACK_CHANNEL_DEFAULT: str = Field(default="#tradingalram", validation_alias='SLACK_CHANNEL_DEFAULT')
+    SLACK_CHANNEL_STATUS: str = Field(default="#tradingalram", validation_alias='SLACK_CHANNEL_STATUS')
+    SLACK_CHANNEL_ALERTS: str = Field(default="#tradingalram", validation_alias='SLACK_CHANNEL_ALERTS')
+    SLACK_CHANNEL_ERRORS: str = Field(default="#tradingalram", validation_alias='SLACK_CHANNEL_ERRORS')
+    SLACK_CHANNEL_CRITICAL: str = Field(default="#tradingalram", validation_alias='SLACK_CHANNEL_CRITICAL')
+    SLACK_CHANNEL_REPORTS: str = Field(default="#tradingalram", validation_alias='SLACK_CHANNEL_REPORTS')
 
-    # --- Volatility Alert Settings ---
-    ENABLE_VOLATILITY: bool = os.getenv("ENABLE_VOLATILITY", "False").lower() == "true"
-    VOLATILITY_THRESHOLD: float = float(os.getenv("VOLATILITY_THRESHOLD", "5.0"))
+    # --- Feature Flags & Other --- 
+    ENABLE_SENTIMENT_ANALYSIS: bool = Field(default=True, validation_alias='ENABLE_SENTIMENT_ANALYSIS')
+    ENABLE_VOLATILITY_ALERT: bool = Field(default=False, validation_alias='ENABLE_VOLATILITY_ALERT')
+    ENABLE_BACKTEST: bool = Field(default=False, validation_alias='ENABLE_BACKTEST')
+    VOLATILITY_THRESHOLD: float = Field(default=5.0, validation_alias='VOLATILITY_THRESHOLD')
+    # Add other flags/settings as needed
 
-    # --- Feature Flags ---
-    ENABLE_BACKTEST: bool = os.getenv("ENABLE_BACKTEST", "False").lower() == "true"
-    ENABLE_SENTIMENT_ANALYSIS: bool = os.getenv("ENABLE_SENTIMENT_ANALYSIS", "True").lower() == "true"
-    ENABLE_VOLATILITY_ALERT: bool = os.getenv("ENABLE_VOLATILITY_ALERT", "False").lower() == "true"
+    # --- Pydantic Settings Config --- 
+    class Config:
+        env_file = dotenv_path
+        env_file_encoding = 'utf-8'
+        case_sensitive = False # Environment variable names are case-insensitive
+        extra = 'ignore' # Ignore extra fields from env/dotenv
 
-logging.info(f"[{__name__}] Settings class defined. Attempting to instantiate...") # Log before instantiation
-# 설정 인스턴스 생성 (다른 모듈에서 import하여 사용)
+# --- Instantiate Settings --- 
 try:
     settings = Settings()
-    logging.info(f"[{__name__}] Settings instance created successfully. Type: {type(settings)}, ID: {id(settings)}") # Log after instantiation
-    # Log a specific attribute to confirm loading
-    if hasattr(settings, 'CHALLENGE_SMA_PERIOD'):
-        logging.info(f"[{__name__}] settings.CHALLENGE_SMA_PERIOD = {settings.CHALLENGE_SMA_PERIOD}")
-    else:
-        logging.warning(f"[{__name__}] settings object created, but CHALLENGE_SMA_PERIOD attribute is missing!")
+    logger.info(f"[{__name__}] Settings instance created successfully.")
+    # Log some values to verify
+    logger.info(f" > Loaded NEWS_API_KEY: {'Yes' if settings.NEWS_API_KEY else 'No'}")
+    logger.info(f" > Loaded ALPACA_API_KEY_ID: {'Yes' if settings.ALPACA_API_KEY_ID else 'No'}")
+    logger.info(f" > Loaded SLACK_WEBHOOK_URL: {'Yes' if settings.SLACK_WEBHOOK_URL else 'No'}")
+    logger.info(f" > Alpaca Base URL: {settings.ALPACA_BASE_URL}")
+    logger.info(f" > Core Assets: {settings.CORE_ASSETS}")
+    logger.info(f" > Log Level: {settings.LOG_LEVEL}")
 except ValidationError as ve:
-    logging.error(f"[{__name__}] Pydantic ValidationError during Settings instantiation: {ve}", exc_info=True)
-    # Optionally raise the error or set settings to None or a default object
+    logger.error(f"[{__name__}] Pydantic ValidationError during Settings instantiation: {ve}", exc_info=False) # Set exc_info=False for cleaner logs
+    # Log specific validation errors
+    for error in ve.errors():
+        logger.error(f"  - Field: {error['loc'][0] if error['loc'] else 'Unknown'}, Error: {error['msg']}")
     settings = None # Set to None on validation error
 except Exception as e:
-    logging.error(f"[{__name__}] Unexpected error during Settings instantiation: {e}", exc_info=True)
-    settings = None # Set to None on other errors
+    logger.error(f"[{__name__}] Unexpected error during Settings instantiation: {e}", exc_info=True)
+    settings = None
 
-if settings is None:
-    logging.critical(f"[{__name__}] Settings object could not be initialized. Exiting or using fallback is necessary.")
-    # Depending on the application, you might exit or raise an exception here
-    # raise RuntimeError("Failed to initialize settings")
+# --- Create Directories & Validate Config (using instantiated settings) ---
+IS_CONFIG_VALID = False
+if settings:
+    def create_dirs(settings_obj: Settings):
+        dirs_to_create = [
+            settings_obj.MODEL_SAVE_DIR,
+            settings_obj.DATA_SAVE_DIR,
+            settings_obj.LOG_DIR,
+            settings_obj.MODEL_WEIGHTS_DIR,
+            # Derived paths are handled by property access
+            settings_obj.SENTIMENT_CACHE_DIR 
+        ]
+        for dir_path in dirs_to_create:
+            try:
+                os.makedirs(dir_path, exist_ok=True)
+                logger.debug(f"Ensured directory exists: {dir_path}")
+            except OSError as e:
+                logger.error(f"Error creating directory {dir_path}: {e}")
+    create_dirs(settings)
 
-# 사용 예시:
+    def validate_config(settings_obj: Settings) -> bool:
+        """Checks if essential configuration variables are set in the settings object."""
+        required_keys = ["NEWS_API_KEY", "ALPACA_API_KEY_ID", "ALPACA_SECRET_KEY"]
+        missing_keys = []
+        if not settings_obj.NEWS_API_KEY: missing_keys.append("NEWS_API_KEY")
+        if not settings_obj.ALPACA_API_KEY_ID: missing_keys.append("ALPACA_API_KEY_ID")
+        if not settings_obj.ALPACA_SECRET_KEY: missing_keys.append("ALPACA_SECRET_KEY")
+        # Add checks for other critical keys if needed (e.g., SLACK_WEBHOOK_URL for notifications)
+        if not settings_obj.SLACK_WEBHOOK_URL:
+             logger.warning("SLACK_WEBHOOK_URL is not set. Slack notifications will be disabled.")
+             # Consider if this should be 'required' depending on system needs
+             # missing_keys.append("SLACK_WEBHOOK_URL") 
+
+        if missing_keys:
+            logger.warning(f"Missing essential API keys/config in .env or environment: {missing_keys}. Some functionalities might fail.")
+            return False
+        logger.info("Essential configuration variables seem to be present.")
+        return True
+    IS_CONFIG_VALID = validate_config(settings)
+
+else:
+    logger.critical("Settings object could not be initialized due to validation errors. Cannot proceed with directory creation or further validation.")
+    # Exit or raise error if settings are critical for the application to run
+    # sys.exit(1)
+
+# Make settings easily importable
+# Example usage in other files:
 # from src.config.settings import settings
-
-# --- Environment Variable Check ---
-def check_env_vars():
-    """필수 환경 변수가 설정되었는지 확인하고 경고를 로깅합니다."""
-    required_core = ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "SLACK_WEBHOOK_URL"]
-    required_challenge = ["BINANCE_API_KEY", "BINANCE_SECRET_KEY", "SLACK_WEBHOOK_URL"] # 챌린지 전략이 Binance를 쓴다고 가정
-    required_sentiment = ["NEWS_API_KEY", "SLACK_WEBHOOK_URL"] # Slack 알림 포함 가정
-
-    warnings = []
-
-    # Core Portfolio 관련 변수 확인 (Alpaca)
-    if not all(os.getenv(var) for var in required_core):
-        missing = [var for var in required_core if not os.getenv(var)]
-        warnings.append(f"Core Portfolio 실행에 필요한 환경 변수 누락: {', '.join(missing)}. 일부 기능이 제한될 수 있습니다.")
-
-    # Challenge Trading 관련 변수 확인 (Binance 가정)
-    if not all(os.getenv(var) for var in required_challenge):
-        missing = [var for var in required_challenge if not os.getenv(var)]
-        warnings.append(f"Challenge Trading 실행에 필요한 환경 변수 누락: {', '.join(missing)}. 일부 기능이 제한될 수 있습니다.")
-
-    # Sentiment Analysis 관련 변수 확인
-    if ENABLE_SENTIMENT_ANALYSIS and not all(os.getenv(var) for var in required_sentiment):
-        missing = [var for var in required_sentiment if not os.getenv(var)]
-        warnings.append(f"Sentiment Analysis 실행에 필요한 환경 변수 누락: {', '.join(missing)}. 감성 분석 기능이 비활성화될 수 있습니다.")
-        # 필요시 여기서 ENABLE_SENTIMENT_ANALYSIS = False 처리 가능
-
-    # Volatility Alert는 외부 API 키가 직접 필요하지 않음 (데이터는 yfinance 등에서 온다고 가정)
-    # 그러나 Slack 알림은 필요할 수 있음
-    if ENABLE_VOLATILITY_ALERT and not os.getenv("SLACK_WEBHOOK_URL"):
-         warnings.append("Volatility Alert 실행 시 Slack 알림에 필요한 SLACK_WEBHOOK_URL 환경 변수가 누락되었습니다.")
-
-    # --- Added: Check for RL Reference Price ---
-    # Check if RL is being used (e.g., based on a flag or existence of RL settings)
-    # For simplicity, we check if the model path likely exists based on algorithm setting.
-    potential_rl_usage = bool(RL_ALGORITHM and RL_POLICY)
-    if potential_rl_usage and RL_NORMALIZATION_REFERENCE_PRICE <= 0.0:
-         warnings.append(
-             f"RL 전략 사용 가능성이 있으나 정규화 기준 가격(RL_NORMALIZATION_REFERENCE_PRICE)이 .env에 설정되지 않았거나 유효하지 않습니다 ({RL_NORMALIZATION_REFERENCE_PRICE}). "
-             f"RL 에이전트가 올바르게 작동하지 않을 수 있습니다. 모델 훈련 후 해당 값을 .env에 설정하세요."
-         )
-    # --- End Added ---
-
-    if warnings:
-        logging.warning("환경 변수 설정 경고:")
-        for warning in warnings:
-            logging.warning(f"- {warning}")
-    else:
-        logging.info("필요한 환경 변수들이 잘 설정되었습니다.")
-
-# 스크립트 로드 시 환경 변수 체크 실행
-# check_env_vars() # 주석 처리: main.py 등 실제 실행 시점에서 호출하는 것이 더 적합할 수 있음 
+# if settings and settings.IS_CONFIG_VALID:
+#     print(settings.ALPACA_BASE_URL) 
