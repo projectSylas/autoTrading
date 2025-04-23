@@ -1,0 +1,11 @@
+{
+  "context_file": "/Users/hjkim/Dev/Hjkim/Trading/mcp/experiment_context.json",
+  "executed_at": "2025-04-17T12:07:06.873586",
+  "result": {
+    "Sharpe Ratio": -0.20762259534744382,
+    "Win Rate [%]": 54.761904761904766,
+    "Total Trades": 42,
+    "Total Return [%]": -0.011152223190018306,
+    "Max Drawdown [%]": 0.0976746993697217
+  }
+}

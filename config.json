@@ -1,0 +1,112 @@
+{
+    "max_open_trades": 5,
+    "stake_currency": "USDT",
+    "stake_amount": 100,
+    "tradable_balance_ratio": 0.99,
+    "fiat_display_currency": "USD",
+    "dry_run": true,
+    "dry_run_wallet": 1000,
+    "cancel_open_orders_on_exit": false,
+    "unfilledtimeout": {
+        "buy": 10,
+        "sell": 30
+    },
+    "bid_strategy": {
+        "price_side": "bid",
+        "ask_last_balance": 0.0,
+        "use_order_book": false,
+        "order_book_top": 1,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+    "ask_strategy": {
+        "price_side": "ask",
+        "use_order_book": false,
+        "order_book_top": 1
+    },
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "password": "",
+        "uid": "",
+        "pair_whitelist": [
+            "BTC/USDT",
+            "ETH/USDT"
+        ],
+        "pair_blacklist": []
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "edge": {
+        "enabled": false,
+        "process_throttle_secs": 3600,
+        "calculate_funding_fees": false,
+        "funding_fee_cutoff": 0.005
+    },
+    "api_server": {
+        "enabled": true,
+        "listen_ip_address": "127.0.0.1",
+        "listen_port": 8080,
+        "verbosity": "error",
+        "enable_openapi": false,
+        "jwt_secret_key": "NeedToSetThis!",
+        "CORS_origins": [],
+        "username": "user",
+        "password": "ChangeMe"
+    },
+    "bot_name": "MyFreqtradeBot",
+    "strategy": "ExampleFreqAIStrategy",
+    "strategy_path": "src/crypto_trader/",
+    "timeframe": "1h",
+    "internals": {
+        "process_throttle_secs": 5
+    },
+    "freqai": {
+        "enabled": true,
+        "purge_old_models": true,
+        "train_period_days": 30,
+        "backtest_period_days": 7,
+        "identifier": "default_freqai_id",
+        "live_retrain_hours": 6,
+        "data_split_parameters": {
+            "test_size": 0.1
+        },
+        "feature_parameters": {
+            "include_timeframes": ["1h", "4h"],
+            "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
+            "label_period_candles": 24,
+            "include_shifted_candles": 2,
+            "DI_threshold": 0.9,
+            "CONV_WIDTH": 3
+        },
+        "model_training_parameters": {
+            "learning_rate": 0.01,
+            "n_estimators": 100,
+            "max_depth": 6
+        },
+        "data_kitchening_parameters": {
+             "use_rolling_normalization": false,
+             "principal_component_analysis": false,
+             "use_SVM_to_remove_outliers": false
+        },
+        "live_settings": {
+            "parallel_prediction": false,
+            "timerange": null
+        }
+    },
+    "telegram": {
+        "enabled": false,
+        "token": "",
+        "chat_id": ""
+    },
+    "logger": {
+        "verbosity": "info",
+        "logfile": null
+    }
+} 

@@ -1,0 +1,22 @@
+{
+    "strategy_name": "breakout-volume-surge",
+    "symbol": "DOGE-USD",
+    "start_date": "2023-10-01",
+    "end_date": "2023-12-30",
+    "interval": "1h",
+    "atr_sl_multiplier": 2.0,
+    "atr_tp_multiplier": 4.5,
+    "pullback_threshold": 0.03,
+    "rsi_period": 14,
+    "breakout_lookback": 20,
+    "pullback_lookback": 5,
+    "volume_lookback": 10,
+    "volume_multiplier": 2.0,
+    "atr_window": 10,
+    "sma_short_period": 7,
+    "sma_long_period": 50,
+    "use_trend_filter": false,
+    "use_atr_exit": true,
+    "initial_cash": 10000.0,
+    "commission": 0.001
+}
