@@ -3,438 +3,241 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Optional
-import pandas_ta as ta # pandas-ta import 추가
+import ta # Import for ta library functions used from common.py
+from typing import Optional, List, Tuple, Dict
+import pandas_ta as pta # Changed import to pta for consistency if used later
 import numba
 import vectorbt as vbt # Ensure vectorbt is imported if not already
+from scipy.signal import find_peaks # For divergence detection from common.py
 
-# --- Setup logger for this module --- 
+# --- Setup logger for this module ---
 # Assumes setup_logging() from logging_config has been called by the entry point
 logger = logging.getLogger(__name__)
-# --- End Setup logger --- 
+# --- End Setup logger ---
 
 # Setup basic logging if needed when run standalone or for debugging
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def calculate_sma(df: pd.DataFrame, window: int, feature_col: str = 'Close') -> pd.DataFrame:
+def calculate_sma(df: pd.DataFrame, window: int, feature_col: str = 'Close') -> pd.Series:
     """
     Calculates the Simple Moving Average (SMA) for a given feature column.
-
-    Args:
-        df (pd.DataFrame): DataFrame containing the price data with a DatetimeIndex.
-                           Must contain the `feature_col`.
-        window (int): The rolling window size for the SMA calculation.
-        feature_col (str): The column name to calculate the SMA on (default: 'Close').
-
-    Returns:
-        pd.DataFrame: The original DataFrame with an additional column named f'SMA_{window}'.
-                      Returns the original DataFrame if calculation fails or prerequisites not met.
+    Returns a Series with the SMA values.
     """
-    if df is None or df.empty:
-        # Use module logger
-        logger.warning("calculate_sma: Input DataFrame is empty.")
-        return df
-    if feature_col not in df.columns:
-        # Use module logger
-        logger.warning(f"calculate_sma: Feature column '{feature_col}' not found in DataFrame.")
-        return df
-    if window <= 0:
-        # Use module logger
-        logger.warning("calculate_sma: Window size must be positive.")
-        return df
+    if df is None or df.empty or feature_col not in df.columns or window <= 0:
+        logger.warning(f"calculate_sma: Invalid input. df empty: {df is None or df.empty}, col: {feature_col}, win: {window}")
+        return pd.Series(dtype=float)
     if len(df) < window:
-        # Use module logger
-        logger.warning(f"calculate_sma: Data length ({len(df)}) is shorter than window size ({window}). SMA will contain NaNs.")
-        # Continue calculation, but result will be NaN until enough data
+        logger.debug(f"calculate_sma: Data length ({len(df)}) < window ({window}).")
+        # Return Series of NaNs with the same index
+        return pd.Series(np.nan, index=df.index)
 
     sma_col_name = f'SMA_{window}'
     try:
-        # Calculate SMA using pandas rolling mean
-        df[sma_col_name] = df[feature_col].rolling(window=window, min_periods=1).mean() # Use min_periods=1 to get SMA even for initial points
-        # Use module logger
+        sma_series = df[feature_col].rolling(window=window, min_periods=window).mean() # Use min_periods=window for standard SMA
         logger.debug(f"Calculated {sma_col_name} using window {window} on column '{feature_col}'.")
+        return sma_series
     except Exception as e:
-        # Use module logger
         logger.error(f"calculate_sma: Error calculating SMA for window {window}: {e}", exc_info=True)
-        # Return original df without the problematic column if error occurs
-        if sma_col_name in df.columns:
-             del df[sma_col_name]
+        return pd.Series(dtype=float) # Return empty Series on error
 
-    return df
-
-def calculate_rsi(df: pd.DataFrame, window: int = 14, feature_col: str = 'Close') -> pd.DataFrame:
+def calculate_rsi(df: pd.DataFrame, window: int = 14, feature_col: str = 'Close') -> pd.Series:
     """
-    Calculates the Relative Strength Index (RSI).
-
-    Args:
-        df (pd.DataFrame): DataFrame containing price data. Must include `feature_col`.
-        window (int): The period for RSI calculation (default: 14).
-        feature_col (str): The column to calculate RSI on (default: 'Close').
-
-    Returns:
-        pd.DataFrame: The original DataFrame with an additional 'RSI' column.
+    Calculates the Relative Strength Index (RSI) using Wilder's EMA method.
+    Returns a Series with the RSI values.
     """
-    if df is None or df.empty:
-        # Use module logger
-        logger.warning("calculate_rsi: Input DataFrame is empty.")
-        return df
-    if feature_col not in df.columns:
-        # Use module logger
-        logger.warning(f"calculate_rsi: Feature column '{feature_col}' not found.")
-        return df
-    if window <= 0:
-        # Use module logger
-        logger.warning("calculate_rsi: Window size must be positive.")
-        return df
-    if len(df) < window + 1: # Need at least window+1 periods for first delta
-        # Use module logger
-        logger.warning(f"calculate_rsi: Data length ({len(df)}) is insufficient for window size ({window}). RSI will be NaN.")
-        df['RSI'] = np.nan # Add NaN column and return
-        return df
+    if df is None or df.empty or feature_col not in df.columns or window <= 0:
+        logger.warning(f"calculate_rsi: Invalid input. df empty: {df is None or df.empty}, col: {feature_col}, win: {window}")
+        return pd.Series(dtype=float)
+    if len(df) < window + 1:
+        logger.debug(f"calculate_rsi: Data length ({len(df)}) insufficient for window ({window}).")
+        return pd.Series(np.nan, index=df.index)
 
-    rsi_col_name = 'RSI'
     try:
-        delta = df[feature_col].diff(1)
-        delta = delta.dropna() # Remove first NaN
-
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
+        delta = df[feature_col].diff(1).dropna()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
 
         # Use Exponential Moving Average (EMA) for Wilder's RSI
         avg_gain = gain.ewm(com=window - 1, min_periods=window).mean()
         avg_loss = loss.ewm(com=window - 1, min_periods=window).mean()
 
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
+        # Handle potential division by zero if avg_loss is 0
+        rs = np.where(avg_loss == 0, np.inf, avg_gain / avg_loss) # Treat division by zero as infinite RS
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        rsi[rs == np.inf] = 100.0 # If RS is infinite, RSI is 100
 
-        df[rsi_col_name] = rsi
-        # Use module logger
-        logger.debug(f"Calculated {rsi_col_name} using window {window} on column '{feature_col}'.")
+        logger.debug(f"Calculated RSI using window {window} on column '{feature_col}'.")
+        return pd.Series(rsi, index=avg_gain.index) # Ensure index alignment
 
     except Exception as e:
-        # Use module logger
         logger.error(f"calculate_rsi: Error calculating RSI for window {window}: {e}", exc_info=True)
-        if rsi_col_name in df.columns:
-             del df[rsi_col_name]
+        return pd.Series(dtype=float)
 
-    return df
-
-# --- Placeholder for other utility functions ---
-
-def calculate_bollinger_bands(df: pd.DataFrame, window: int = 20, num_std_dev: int = 2, feature_col: str = 'Close') -> pd.DataFrame:
+def calculate_bollinger_bands(df: pd.DataFrame, window: int = 20, num_std_dev: float = 2.0, feature_col: str = 'Close') -> pd.DataFrame:
     """
     Calculates Bollinger Bands (Middle, Upper, Lower).
-
-    Args:
-        df (pd.DataFrame): DataFrame with price data.
-        window (int): Rolling window for SMA and standard deviation.
-        num_std_dev (int): Number of standard deviations for upper/lower bands.
-        feature_col (str): Column to use for calculation.
-
-    Returns:
-        pd.DataFrame: Original DataFrame with 'BB_Middle', 'BB_Upper', 'BB_Lower' columns.
+    Returns a DataFrame with BB_Middle, BB_Upper, BB_Lower columns.
     """
-    if df is None or df.empty or feature_col not in df.columns:
-         # Use module logger
-         logger.warning("calculate_bollinger_bands: Invalid input.")
-         return df
-    if window <= 0 or num_std_dev <= 0:
-        # Use module logger
-        logger.warning("calculate_bollinger_bands: Window and num_std_dev must be positive.")
-        return df
+    if df is None or df.empty or feature_col not in df.columns or window <= 0 or num_std_dev <= 0:
+        logger.warning(f"calculate_bollinger_bands: Invalid input. df empty: {df is None or df.empty}, col: {feature_col}, win: {window}, std: {num_std_dev}")
+        return pd.DataFrame(index=df.index if df is not None else None, columns=['BB_Middle', 'BB_Upper', 'BB_Lower'])
 
     middle_band_col = 'BB_Middle'
     upper_band_col = 'BB_Upper'
     lower_band_col = 'BB_Lower'
 
+    bb_df = pd.DataFrame(index=df.index)
+
     try:
-         # Calculate Middle Band (SMA)
-         df[middle_band_col] = df[feature_col].rolling(window=window, min_periods=1).mean()
-
-         # Calculate Standard Deviation
-         rolling_std = df[feature_col].rolling(window=window, min_periods=1).std()
-
-         # Calculate Upper and Lower Bands
-         df[upper_band_col] = df[middle_band_col] + (rolling_std * num_std_dev)
-         df[lower_band_col] = df[middle_band_col] - (rolling_std * num_std_dev)
-
-         # Use module logger
-         logger.debug(f"Calculated Bollinger Bands (W:{window}, SD:{num_std_dev}) on '{feature_col}'.")
+        bb_df[middle_band_col] = df[feature_col].rolling(window=window, min_periods=window).mean()
+        rolling_std = df[feature_col].rolling(window=window, min_periods=window).std()
+        bb_df[upper_band_col] = bb_df[middle_band_col] + (rolling_std * num_std_dev)
+        bb_df[lower_band_col] = bb_df[middle_band_col] - (rolling_std * num_std_dev)
+        logger.debug(f"Calculated Bollinger Bands (W:{window}, SD:{num_std_dev}) on '{feature_col}'.")
+        return bb_df
 
     except Exception as e:
-        # Use module logger
         logger.error(f"calculate_bollinger_bands: Error calculating Bollinger Bands: {e}", exc_info=True)
-        # Clean up columns if error occurred
-        for col in [middle_band_col, upper_band_col, lower_band_col]:
-             if col in df.columns: del df[col]
+        return pd.DataFrame(index=df.index, columns=['BB_Middle', 'BB_Upper', 'BB_Lower']) # Return empty BB df on error
 
-    return df
+# --- Signal Detection Functions ---
 
-def detect_rsi_divergence(df: pd.DataFrame, price_col: str = 'Close', rsi_col: str = 'RSI', lookback: int = 14, threshold: float = 0.01) -> str:
-    """
-    Detects simple RSI divergence by comparing the last two major lows/highs
-    within the lookback period.
+# Merged Divergence Detection (Using common.py version as a base, improved)
+def detect_rsi_divergence(prices: pd.Series, rsi: pd.Series, window: int = 14, peak_distance: int = 5, peak_prominence_ratio: float = 0.03) -> str:
+    """Detects RSI divergence using scipy.signal.find_peaks.
 
     Args:
-        df (pd.DataFrame): DataFrame containing price and RSI data. Index must be sorted.
-        price_col (str): Column name for price data (e.g., 'Close', 'Low', 'High').
-        rsi_col (str): Column name for RSI data.
-        lookback (int): Period to look back for finding the last two lows/highs.
-        threshold (float): Minimum relative difference threshold to consider highs/lows significantly different.
+        prices (pd.Series): Close price series.
+        rsi (pd.Series): RSI series.
+        window (int): Lookback window for finding peaks/troughs.
+        peak_distance (int): Minimum distance between peaks/troughs.
+        peak_prominence_ratio (float): Minimum prominence ratio (relative to price range) for peaks/troughs.
 
     Returns:
-        str: 'bullish', 'bearish', or 'none' indicating the type of divergence found.
+        str: 'bullish', 'bearish', or 'none'.
     """
-    if df is None or df.empty or rsi_col not in df.columns or price_col not in df.columns:
-        # Use module logger
-        logger.warning("detect_rsi_divergence: Invalid input DataFrame or missing columns.")
-        return 'none'
-    if len(df) < lookback * 2: # Need enough data for comparison
-        # Use module logger
-        logger.warning(f"detect_rsi_divergence: Insufficient data ({len(df)}) for lookback ({lookback}).")
+    if prices.empty or rsi.empty or len(prices) < window or len(rsi) < window:
+        logger.debug("detect_rsi_divergence: Insufficient data.")
         return 'none'
 
-    # Use the last `lookback` periods for finding peaks/troughs
-    recent_df = df.iloc[-lookback:]
+    # Ensure alignment
+    prices, rsi = prices.align(rsi, join='inner')
+    if prices.empty:
+         logger.debug("detect_rsi_divergence: Data alignment resulted in empty series.")
+         return 'none'
+
+    prices_window = prices.tail(window)
+    rsi_window = rsi.tail(window)
+
+    if prices_window.isnull().all() or rsi_window.isnull().all():
+        logger.debug("detect_rsi_divergence: Window contains only NaNs.")
+        return 'none'
+
+    price_range = prices_window.max() - prices_window.min()
+    if price_range == 0: # Avoid division by zero if price is flat
+        price_range = 1.0
+
+    peak_prominence = price_range * peak_prominence_ratio
+    rsi_prominence = 1 # Use a fixed prominence for RSI or make it relative too?
 
     try:
-        # --- Find last two significant lows for Bullish Divergence ---
-        # Using rolling min might be too sensitive. Let's try finding actual low points.
-        # Simple approach: find the index of the min price and RSI in the period
-        price_low_idx = recent_df[price_col].idxmin()
-        rsi_low_idx = recent_df[rsi_col].idxmin()
-        price_low_val = recent_df.loc[price_low_idx, price_col]
-        rsi_low_val = recent_df.loc[rsi_low_idx, rsi_col]
+        # Find peaks (highs)
+        price_peaks_idx, _ = find_peaks(prices_window, prominence=peak_prominence, distance=peak_distance)
+        rsi_peaks_idx, _ = find_peaks(rsi_window, prominence=rsi_prominence, distance=peak_distance)
 
-        # Find previous low before the most recent one in the full df (excluding the last identified low point)
-        prev_df_lows = df.iloc[-lookback*2:-lookback] # Look in the period before the recent one
-        if not prev_df_lows.empty:
-            prev_price_low_idx = prev_df_lows[price_col].idxmin()
-            prev_rsi_low_idx = prev_df_lows[rsi_col].idxmin() # Using same index for simplicity, refinement possible
-            prev_price_low_val = prev_df_lows.loc[prev_price_low_idx, price_col]
-            prev_rsi_low_val = prev_df_lows.loc[prev_rsi_low_idx, rsi_col] # Use RSI at the same time as prev price low
+        # Find troughs (lows)
+        price_troughs_idx, _ = find_peaks(-prices_window, prominence=peak_prominence, distance=peak_distance)
+        rsi_troughs_idx, _ = find_peaks(-rsi_window, prominence=rsi_prominence, distance=peak_distance)
 
-            # Check for Bullish Divergence (Price Lower Low, RSI Higher Low)
-            # Ensure lows are significantly different using threshold
-            price_diff_ratio = abs(price_low_val - prev_price_low_val) / max(abs(prev_price_low_val), 1e-9) # Avoid zero division
-            rsi_diff_ratio = abs(rsi_low_val - prev_rsi_low_val) / max(abs(prev_rsi_low_val), 1e-9)
+        # Convert relative window indices to original series indices for value lookup
+        price_peak_indices = prices_window.index[price_peaks_idx]
+        rsi_peak_indices = rsi_window.index[rsi_peaks_idx]
+        price_trough_indices = prices_window.index[price_troughs_idx]
+        rsi_trough_indices = rsi_window.index[rsi_troughs_idx]
 
-            if price_low_val < prev_price_low_val and rsi_low_val > prev_rsi_low_val and price_diff_ratio > threshold and rsi_diff_ratio > threshold:
-                 # Use module logger
-                 logger.info(f"Bullish RSI Divergence Detected: Price ({prev_price_low_val:.2f} -> {price_low_val:.2f}), RSI ({prev_rsi_low_val:.2f} -> {rsi_low_val:.2f})")
-                 return 'bullish'
+        # Check Bearish Divergence (Price Higher High, RSI Lower High)
+        if len(price_peak_indices) >= 2 and len(rsi_peak_indices) >= 2:
+            # Get the last two peaks
+            last_price_peak_time = price_peak_indices[-1]
+            prev_price_peak_time = price_peak_indices[-2]
 
-        # --- Find last two significant highs for Bearish Divergence ---
-        price_high_idx = recent_df[price_col].idxmax()
-        rsi_high_idx = recent_df[rsi_col].idxmax()
-        price_high_val = recent_df.loc[price_high_idx, price_col]
-        rsi_high_val = recent_df.loc[rsi_high_idx, rsi_col]
+            # Find corresponding RSI peaks (this matching can be complex, simple approach: use nearest)
+            # For simplicity, find RSI peak closest in time to price peak
+            def find_nearest(array, value):
+                array = np.asarray(array)
+                idx = (np.abs(array - value)).argmin()
+                return array[idx]
 
-        # Find previous high before the most recent one
-        prev_df_highs = df.iloc[-lookback*2:-lookback]
-        if not prev_df_highs.empty:
-            prev_price_high_idx = prev_df_highs[price_col].idxmax()
-            prev_rsi_high_idx = prev_df_highs[rsi_col].idxmax() # Use RSI at the same time as prev price high
-            prev_price_high_val = prev_df_highs.loc[prev_price_high_idx, price_col]
-            prev_rsi_high_val = prev_df_highs.loc[prev_rsi_high_idx, rsi_col]
+            # Find RSI peaks closest to the price peaks in time (or use the price peak time directly)
+            last_rsi_peak_val = rsi.get(last_price_peak_time, np.nan) # Use get for safety
+            prev_rsi_peak_val = rsi.get(prev_price_peak_time, np.nan)
 
-            # Check for Bearish Divergence (Price Higher High, RSI Lower High)
-            price_diff_ratio = abs(price_high_val - prev_price_high_val) / max(abs(prev_price_high_val), 1e-9)
-            rsi_diff_ratio = abs(rsi_high_val - prev_rsi_high_val) / max(abs(prev_rsi_high_val), 1e-9)
+            if not pd.isna(last_rsi_peak_val) and not pd.isna(prev_rsi_peak_val):
+                 if prices[last_price_peak_time] > prices[prev_price_peak_time] and \
+                    last_rsi_peak_val < prev_rsi_peak_val:
+                    # Check if the last peak is recent enough (e.g., within last 3 bars of window)
+                    if (prices_window.index[-1] - last_price_peak_time) <= pd.Timedelta(days=3 * (prices_window.index[1]-prices_window.index[0]).days) : # Adjust based on timeframe
+                         logger.info(f"🐻 Bearish RSI Divergence detected: Price HH ({prev_price_peak_time.date()}->{last_price_peak_time.date()}), RSI LH")
+                         return 'bearish'
 
-            if price_high_val > prev_price_high_val and rsi_high_val < prev_rsi_high_val and price_diff_ratio > threshold and rsi_diff_ratio > threshold:
-                # Use module logger
-                logger.info(f"Bearish RSI Divergence Detected: Price ({prev_price_high_val:.2f} -> {price_high_val:.2f}), RSI ({prev_rsi_high_val:.2f} -> {rsi_high_val:.2f})")
-                return 'bearish'
+        # Check Bullish Divergence (Price Lower Low, RSI Higher Low)
+        if len(price_trough_indices) >= 2 and len(rsi_trough_indices) >= 2:
+            last_price_trough_time = price_trough_indices[-1]
+            prev_price_trough_time = price_trough_indices[-2]
+
+            last_rsi_trough_val = rsi.get(last_price_trough_time, np.nan)
+            prev_rsi_trough_val = rsi.get(prev_price_trough_time, np.nan)
+
+            if not pd.isna(last_rsi_trough_val) and not pd.isna(prev_rsi_trough_val):
+                if prices[last_price_trough_time] < prices[prev_price_trough_time] and \
+                   last_rsi_trough_val > prev_rsi_trough_val:
+                   if (prices_window.index[-1] - last_price_trough_time) <= pd.Timedelta(days=3 * (prices_window.index[1]-prices_window.index[0]).days):
+                        logger.info(f"🐂 Bullish RSI Divergence detected: Price LL ({prev_price_trough_time.date()}->{last_price_trough_time.date()}), RSI HL")
+                        return 'bullish'
 
     except Exception as e:
-        # Use module logger
-        logger.error(f"detect_rsi_divergence: Error detecting divergence: {e}", exc_info=True)
-        return 'none' # Return 'none' on error
+        logger.error(f"detect_rsi_divergence: Error during detection: {e}", exc_info=True)
+        return 'none'
 
-    return 'none' # Default if no divergence found
+    return 'none'
 
-def detect_trendline_breakout_pullback(df: pd.DataFrame,
-                                       price_col: str = 'Close',
-                                       high_col: str = 'High',
-                                       low_col: str = 'Low',
-                                       lookback_breakout: int = 20,
-                                       lookback_pullback: int = 5,
-                                       pullback_threshold: float = 0.01) -> str:
-    """
-    Detects a breakout of a recent high/low followed by a pullback towards the breakout level.
-    Improved logic: Identifies the breakout bar first, then checks for pullback after.
+
+# Merged Volume Spike Detection (Using common.py version for now)
+def detect_volume_spike(df: pd.DataFrame, window: int = 20, factor: float = 2.0, volume_col: str = 'Volume') -> bool:
+    """Detects if the latest volume is significantly higher than the recent average volume.
 
     Args:
-        df (pd.DataFrame): DataFrame with price data (Close, High, Low). Index must be sorted.
-        price_col (str): Column for current price checks ('Close').
-        high_col (str): Column for high prices.
-        low_col (str): Column for low prices.
-        lookback_breakout (int): Period before the potential breakout to find the high/low level.
-        lookback_pullback (int): Period after the potential breakout to look for pullback.
-                                  Also defines how recently the breakout must have occurred.
-        pullback_threshold (float): Relative threshold defining how close the pullback must be to the breakout level.
+        df (pd.DataFrame): DataFrame containing 'Volume' column.
+        window (int): Rolling window for average volume calculation.
+        factor (float): Multiplier for average volume to define a spike.
+        volume_col (str): Name of the volume column.
 
     Returns:
-        str: 'bullish_pullback', 'bearish_breakdown', or 'none'.
+        bool: True if a volume spike is detected, False otherwise.
     """
-    if df is None or df.empty or not all(c in df.columns for c in [price_col, high_col, low_col]):
-        # Use module logger
-        logger.warning("detect_trendline_breakout_pullback: Invalid input DataFrame or missing columns.")
-        return 'none'
-    # Need enough data for breakout period + pullback lookback period + current bar
-    required_len = lookback_breakout + lookback_pullback + 1
-    if len(df) < required_len:
-        # Use module logger
-        logger.debug(f"detect_trendline_breakout_pullback: Insufficient data ({len(df)}) for lookbacks ({required_len}).")
-        return 'none'
+    if df is None or df.empty or volume_col not in df.columns or len(df) < window + 1:
+        # logger.debug(f"detect_volume_spike: Insufficient data or missing '{volume_col}' column.")
+        return False # Not necessarily a warning, might just not have enough data yet
 
     try:
-        current_index = len(df) - 1 # 현재 봉의 인덱스 (0부터 시작)
-        current_close = df[price_col].iloc[current_index]
+        avg_volume = df[volume_col].rolling(window=window, closed='left').mean().iloc[-1] # Use closed='left' to exclude current bar
+        latest_volume = df[volume_col].iloc[-1]
 
-        # Iterate backwards from `lookback_pullback` bars ago up to yesterday to find a potential breakout bar
-        # Example: lookback_pullback=5 -> Check bars at index -5, -4, -3, -2, -1
-        for i in range(lookback_pullback, 0, -1):
-            potential_breakout_index = current_index - i
-            if potential_breakout_index < lookback_breakout: # Need enough preceding data to define breakout level
-                continue
+        if pd.isna(avg_volume):
+             # logger.debug("detect_volume_spike: Average volume is NaN.")
+             return False
 
-            potential_breakout_high = df[high_col].iloc[potential_breakout_index]
-            potential_breakout_low = df[low_col].iloc[potential_breakout_index]
-
-            # --- Define Breakout Level --- 
-            # Look back `lookback_breakout` bars *before* the potential breakout bar
-            breakout_level_period_start = potential_breakout_index - lookback_breakout
-            breakout_level_period_end = potential_breakout_index # exclusive
-            breakout_level_df = df.iloc[breakout_level_period_start:breakout_level_period_end]
-
-            if breakout_level_df.empty: continue # Should not happen with length check, but be safe
-
-            highest_high_before_breakout = breakout_level_df[high_col].max()
-            lowest_low_before_breakout = breakout_level_df[low_col].min()
-
-            # --- Check for Bullish Breakout Event --- 
-            # Did the high of the potential breakout bar exceed the previous highest high?
-            is_bullish_breakout_bar = potential_breakout_high > highest_high_before_breakout
-
-            if is_bullish_breakout_bar:
-                # Breakout identified at `potential_breakout_index`
-                # Now, check for pullback in the period *after* the breakout bar, up to the current bar
-                pullback_check_start = potential_breakout_index + 1
-                pullback_check_end = current_index + 1 # inclusive
-                pullback_period_df = df.iloc[pullback_check_start:pullback_check_end]
-
-                if not pullback_period_df.empty:
-                    lowest_low_after_breakout = pullback_period_df[low_col].min()
-
-                    # Check if the pullback low touched near the breakout level
-                    # and if the current close is above the pullback low (bounce)
-                    pullback_valid = lowest_low_after_breakout <= highest_high_before_breakout * (1 + pullback_threshold)
-                    bounce_valid = current_close > lowest_low_after_breakout
-
-                    if pullback_valid and bounce_valid:
-                         # Use module logger
-                         logger.info(f"Bullish Pullback Detected: Breakout Bar {potential_breakout_index}, Broke Level {highest_high_before_breakout:.2f}, Pulled back to {lowest_low_after_breakout:.2f}, Current {current_close:.2f}")
-                         return 'bullish_pullback'
-                # If a bullish breakout was found, no need to check further back for other breakouts
-                break # Exit the loop once the most recent valid breakout is checked
-
-            # --- Check for Bearish Breakdown Event --- 
-            # Did the low of the potential breakout bar go below the previous lowest low?
-            is_bearish_breakdown_bar = potential_breakout_low < lowest_low_before_breakout
-
-            if is_bearish_breakdown_bar:
-                # Breakdown identified at `potential_breakout_index`
-                # Check for pullback (rally attempt) after the breakdown bar
-                pullback_check_start = potential_breakout_index + 1
-                pullback_check_end = current_index + 1
-                pullback_period_df = df.iloc[pullback_check_start:pullback_check_end]
-
-                if not pullback_period_df.empty:
-                    highest_high_after_breakdown = pullback_period_df[high_col].max()
-
-                    # Check if the rally attempt reached near the breakdown level
-                    # and if the current close is below the rally high (failed rally)
-                    pullback_valid = highest_high_after_breakdown >= lowest_low_before_breakout * (1 - pullback_threshold)
-                    rejection_valid = current_close < highest_high_after_breakdown
-
-                    if pullback_valid and rejection_valid:
-                        # Use module logger
-                        logger.info(f"Bearish Breakdown Detected: Breakdown Bar {potential_breakout_index}, Broke Level {lowest_low_before_breakout:.2f}, Pulled back to {highest_high_after_breakdown:.2f}, Current {current_close:.2f}")
-                        return 'bearish_breakdown'
-                # If a bearish breakdown was found, no need to check further back
-                break
+        is_spike = latest_volume > (avg_volume * factor)
+        # if is_spike:
+        #     logger.debug(f"Volume Spike Detected: Latest={latest_volume:.0f}, Avg={avg_volume:.0f}, Factor={factor}")
+        return is_spike
 
     except Exception as e:
-        # Use module logger
-        logger.error(f"detect_trendline_breakout_pullback: Error detecting: {e}", exc_info=True)
-        return 'none'
+        logger.error(f"detect_volume_spike: Error calculating volume spike: {e}", exc_info=True)
+        return False
 
-    return 'none' # No valid breakout/pullback pattern found within the lookback period
 
-def calculate_poc(df: pd.DataFrame, lookback: int = 50, price_col: str = 'Close', volume_col: str = 'Volume') -> Optional[float]:
-    """
-    Calculates the Point of Control (POC) approximated by Volume Weighted Average Price (VWAP)
-    over the specified lookback period.
-
-    Args:
-        df (pd.DataFrame): DataFrame containing price and volume data.
-        lookback (int): The number of periods to look back for calculation.
-        price_col (str): The column name for price (default: 'Close').
-        volume_col (str): The column name for volume (default: 'Volume').
-
-    Returns:
-        Optional[float]: The calculated POC (VWAP) value for the last point in the lookback period,
-                         or None if calculation is not possible (e.g., insufficient data, zero volume).
-    """
-    if df is None or df.empty:
-        logger.warning("calculate_poc: Input DataFrame is empty.")
-        return None
-    if not all(col in df.columns for col in [price_col, volume_col]):
-        logger.warning(f"calculate_poc: Required columns ('{price_col}', '{volume_col}') not found.")
-        return None
-    if len(df) < lookback:
-        # logger.debug(f"calculate_poc: Insufficient data ({len(df)}) for lookback ({lookback}).") # Debug level
-        return None # Not enough data to calculate over the full lookback
-
-    # Get the slice for the lookback period (last 'lookback' rows)
-    df_slice = df.iloc[-lookback:]
-
-    # --- Check for NaN values in the slice --- 
-    if df_slice[[price_col, volume_col]].isnull().values.any():
-        logger.warning(f"calculate_poc: NaN values found in price or volume within the lookback period. Unable to calculate POC accurately.")
-        # Decide how to handle NaNs: return None, fillna(0), etc.
-        # For now, return None if any NaN exists in the required columns for the slice
-        return None
-
-    try:
-        total_volume = df_slice[volume_col].sum()
-
-        # --- Check for zero total volume before division --- 
-        if total_volume == 0:
-            logger.warning(f"calculate_poc: Total volume within the lookback period ({lookback}) is zero. Cannot calculate POC.")
-            return None
-
-        # Calculate VWAP as POC proxy
-        vwap = (df_slice[price_col] * df_slice[volume_col]).sum() / total_volume
-
-        # Check if the result is NaN (could happen due to other numeric issues)
-        if pd.isna(vwap):
-             logger.warning(f"calculate_poc: Calculated VWAP (POC proxy) is NaN despite non-zero volume. Check input data.")
-             return None
-
-        # logger.debug(f"Calculated POC (VWAP proxy): {vwap:.4f} over last {lookback} periods.") # Debug level
-        return vwap
-
-    except Exception as e:
-        logger.error(f"calculate_poc: Error calculating POC (VWAP proxy): {e}", exc_info=True)
-        return None
-
-# Add other functions like calculate_vpvr etc. here later 
-
-# Numba-optimized version of the core logic
-# Add explicit type signature
+# Keeping Numba optimized trendline detection from strategy_utils.py
 @numba.njit('i1[:](f8[:], f8[:], f8[:], i8, i8, f8)')
 def find_breakout_pullback_nb(high: np.ndarray,
                               low: np.ndarray,
@@ -443,546 +246,419 @@ def find_breakout_pullback_nb(high: np.ndarray,
                               lookback_pullback: int,
                               pullback_threshold: float) -> np.ndarray:
     """
-    Numba-optimized function to detect breakout/pullbacks.
-    Returns an array where:
-    1 = bullish pullback
-    -1 = bearish breakdown pullback
-    0 = none
+    Numba-optimized function to find trendline breakout and pullback signals.
+
+    Args:
+        high (np.ndarray): High prices.
+        low (np.ndarray): Low prices.
+        close (np.ndarray): Close prices.
+        lookback_breakout (int): Window to find highs/lows for trendline.
+        lookback_pullback (int): Window to check for pullback after breakout.
+        pullback_threshold (float): Relative threshold for pullback validation.
+
+    Returns:
+        np.ndarray: Signal array (0: None, 1: Breakout Up, 2: Pullback Support,
+                      -1: Breakout Down, -2: Pullback Resistance).
     """
     n = len(close)
-    signals = np.zeros(n, dtype=np.int8) # 0: none, 1: bullish, -1: bearish
+    signals = np.zeros(n, dtype=np.int8)
 
-    # Need enough data for breakout period + pullback lookback period + current bar
-    required_len = lookback_breakout + lookback_pullback + 1
+    if n < lookback_breakout + lookback_pullback:
+        return signals # Not enough data
 
-    # Start from the first index where enough data is available
-    for current_index in range(required_len - 1, n):
-        # Iterate backwards from `lookback_pullback` bars ago up to yesterday to find a potential breakout bar
-        found_signal_in_inner = False # Added flag
-        for i in range(lookback_pullback, 0, -1):
-            if found_signal_in_inner: break # Exit if signal found in inner loop
+    for i in range(lookback_breakout + lookback_pullback -1, n):
+        # --- Upper Trendline (Resistance) ---
+        highs_window = high[i - lookback_breakout + 1 : i + 1]
+        idx_window = np.arange(len(highs_window))
 
-            potential_breakout_index = current_index - i
-            # Ensure we don't index before the start of the array
-            if potential_breakout_index < 0:
-                 continue
-            # Check if we have enough history for the breakout level calculation itself
-            if potential_breakout_index < lookback_breakout:
-                continue
+        # Find indices of the two highest points in the window
+        if len(highs_window) >= 2:
+             # Simple approach: use argpartition, but might not find peaks well.
+             # A better approach would involve peak finding like in divergence.
+             # For simplicity here, assume we can connect first and last points or highest two.
+             # Let's try connecting highest two distinct points
+             sorted_indices = np.argsort(highs_window)[::-1]
+             idx_h1 = sorted_indices[0]
+             idx_h2 = -1
+             for k in range(1, len(sorted_indices)):
+                 if highs_window[sorted_indices[k]] < highs_window[idx_h1]: # Ensure distinct high value
+                     idx_h2 = sorted_indices[k]
+                     break
 
-            potential_breakout_high = high[potential_breakout_index]
-            potential_breakout_low = low[potential_breakout_index]
+             if idx_h2 != -1:
+                # Ensure chronological order for slope calculation
+                p1_idx, p1_val = (idx_h2, highs_window[idx_h2]) if idx_h2 < idx_h1 else (idx_h1, highs_window[idx_h1])
+                p2_idx, p2_val = (idx_h1, highs_window[idx_h1]) if idx_h2 < idx_h1 else (idx_h2, highs_window[idx_h2])
 
-            # --- Define Breakout Level ---
-            breakout_level_period_start = potential_breakout_index - lookback_breakout
-            breakout_level_period_end = potential_breakout_index
-            # Numba works with numpy slices
-            breakout_level_highs = high[breakout_level_period_start:breakout_level_period_end]
-            breakout_level_lows = low[breakout_level_period_start:breakout_level_period_end]
+                if p2_idx > p1_idx: # Avoid division by zero
+                    slope_upper = (p2_val - p1_val) / (p2_idx - p1_idx)
+                    intercept_upper = p1_val - slope_upper * p1_idx
 
-            if breakout_level_highs.size == 0 or breakout_level_lows.size == 0: continue # Safety check
+                    # Trendline value at current point (relative index within window)
+                    current_relative_idx = len(highs_window) - 1
+                    trendline_val_upper = slope_upper * current_relative_idx + intercept_upper
 
-            # Use np.nanmax/np.nanmin if NaNs are possible, otherwise np.max/np.min
-            highest_high_before_breakout = np.max(breakout_level_highs)
-            lowest_low_before_breakout = np.min(breakout_level_lows)
+                    # Check for Breakout Up
+                    if close[i] > trendline_val_upper and close[i-1] <= (slope_upper * (current_relative_idx - 1) + intercept_upper):
+                        signals[i] = 1 # Breakout Up
 
-            # --- Check for Bullish Breakout Event ---
-            is_bullish_breakout_bar = potential_breakout_high > highest_high_before_breakout
-            if is_bullish_breakout_bar:
-                # Check for pullback after the breakout bar
-                pullback_check_start = potential_breakout_index + 1
-                pullback_check_end = current_index + 1 # Numba slicing is exclusive at the end
-                pullback_period_lows = low[pullback_check_start:pullback_check_end]
+                        # Check for Pullback to Support after Breakout Up
+                        if i >= lookback_breakout + lookback_pullback:
+                            broke_out = False
+                            pullback_valid = False
+                            for j in range(1, lookback_pullback + 1):
+                                prev_idx_rel = current_relative_idx - j
+                                prev_trend_val = slope_upper * prev_idx_rel + intercept_upper
+                                # Check if price was above trendline previously
+                                if close[i-j] > prev_trend_val:
+                                     broke_out = True
+                                # Check if price came back near or below the trendline recently
+                                if broke_out and low[i] <= trendline_val_upper * (1 + pullback_threshold) and low[i] >= trendline_val_upper * (1-pullback_threshold):
+                                     pullback_valid = True
+                                     break # Found valid pullback
+                            if pullback_valid:
+                                signals[i] = 2 # Pullback Support
 
-                if pullback_period_lows.size > 0:
-                    lowest_low_after_breakout = np.min(pullback_period_lows)
-                    current_close_val = close[current_index]
+        # --- Lower Trendline (Support) ---
+        lows_window = low[i - lookback_breakout + 1 : i + 1]
+        # Find indices of the two lowest points
+        if len(lows_window) >= 2:
+            sorted_indices_low = np.argsort(lows_window)
+            idx_l1 = sorted_indices_low[0]
+            idx_l2 = -1
+            for k in range(1, len(sorted_indices_low)):
+                if lows_window[sorted_indices_low[k]] > lows_window[idx_l1]:
+                    idx_l2 = sorted_indices_low[k]
+                    break
 
-                    # Check conditions
-                    pullback_valid = lowest_low_after_breakout <= highest_high_before_breakout * (1 + pullback_threshold)
-                    bounce_valid = current_close_val > lowest_low_after_breakout
+            if idx_l2 != -1:
+                p1_idx_low, p1_val_low = (idx_l2, lows_window[idx_l2]) if idx_l2 < idx_l1 else (idx_l1, lows_window[idx_l1])
+                p2_idx_low, p2_val_low = (idx_l1, lows_window[idx_l1]) if idx_l2 < idx_l1 else (idx_l2, lows_window[idx_l2])
 
-                    if pullback_valid and bounce_valid:
-                        signals[current_index] = 1 # Bullish pullback
-                        found_signal_in_inner = True # Set flag
-                        break # Exit inner loop, found most recent pattern for this current_index
-                # Even if pullback check fails, break because we found the most recent breakout bar
-                break # Exit inner loop, checked the most recent breakout
+                if p2_idx_low > p1_idx_low:
+                    slope_lower = (p2_val_low - p1_val_low) / (p2_idx_low - p1_idx_low)
+                    intercept_lower = p1_val_low - slope_lower * p1_idx_low
+                    trendline_val_lower = slope_lower * current_relative_idx + intercept_lower
 
-            # --- Check for Bearish Breakdown Event ---
-            is_bearish_breakdown_bar = potential_breakout_low < lowest_low_before_breakout
-            if is_bearish_breakdown_bar:
-                # Check for pullback (rally attempt) after the breakdown bar
-                pullback_check_start = potential_breakout_index + 1
-                pullback_check_end = current_index + 1
-                pullback_period_highs = high[pullback_check_start:pullback_check_end]
+                    # Check for Breakout Down
+                    if close[i] < trendline_val_lower and close[i-1] >= (slope_lower * (current_relative_idx - 1) + intercept_lower):
+                        signals[i] = -1 # Breakout Down
 
-                if pullback_period_highs.size > 0:
-                    highest_high_after_breakdown = np.max(pullback_period_highs)
-                    current_close_val = close[current_index]
-
-                    # Check conditions
-                    pullback_valid = highest_high_after_breakdown >= lowest_low_before_breakout * (1 - pullback_threshold)
-                    rejection_valid = current_close_val < highest_high_after_breakdown
-
-                    if pullback_valid and rejection_valid:
-                        signals[current_index] = -1 # Bearish breakdown pullback
-                        found_signal_in_inner = True # Set flag
-                        break # Exit inner loop
-                # Even if pullback check fails, break because we found the most recent breakdown bar
-                break # Exit inner loop
-
-        # If the inner loop finished without break, no signal was found for current_index
+                        # Check for Pullback to Resistance after Breakout Down
+                        if i >= lookback_breakout + lookback_pullback:
+                            broke_down = False
+                            pullback_valid_res = False
+                            for j in range(1, lookback_pullback + 1):
+                                prev_idx_rel = current_relative_idx - j
+                                prev_trend_val_low = slope_lower * prev_idx_rel + intercept_lower
+                                if close[i-j] < prev_trend_val_low:
+                                     broke_down = True
+                                if broke_down and high[i] >= trendline_val_lower * (1 - pullback_threshold) and high[i] <= trendline_val_lower * (1 + pullback_threshold):
+                                     pullback_valid_res = True
+                                     break
+                            if pullback_valid_res:
+                                 signals[i] = -2 # Pullback Resistance
 
     return signals
 
-# Create a vectorbt Indicator using the Numba function
-# BreakoutPullback = vbt.IndicatorFactory(
-#     class_name="BreakoutPullback",
-#     short_name="bopb",
-#     input_names=["high", "low", "close"], # Input price series
-#     param_names=["lookback_breakout", "lookback_pullback", "pullback_threshold"], # Parameters for the function
-#     output_names=["signal"]
-# ).from_apply_func(
-#     find_breakout_pullback_nb, # The Numba function
-#     # Default parameter values (can be overridden)
-#     lookback_breakout=20,
-#     lookback_pullback=5,
-#     pullback_threshold=0.01,
-#     keep_pd=True # Output as pd.Series
-# ) 
-
-# --- NEW RSI Divergence Function (as requested) ---
-def detect_rsi_divergence_v2(close: pd.Series, rsi: pd.Series, window: int = 14):
-    '''
-    Detects simple bullish RSI divergence over a rolling window.
-    - MODIFIED: Price makes a lower low (< 1% below window min), RSI makes a higher low (> 1% above window min).
+def detect_trendline_breakout_pullback(df: pd.DataFrame,
+                                       price_col: str = 'Close',
+                                       high_col: str = 'High',
+                                       low_col: str = 'Low',
+                                       lookback_breakout: int = 20,
+                                       lookback_pullback: int = 5,
+                                       pullback_threshold: float = 0.01) -> pd.Series:
+    """
+    Wrapper for the Numba-optimized trendline breakout/pullback detection.
 
     Args:
-        close (pd.Series): Series of closing prices.
-        rsi (pd.Series): Series of RSI values.
-        window (int): Lookback window for divergence detection.
+        df (pd.DataFrame): DataFrame with High, Low, Close columns.
+        price_col, high_col, low_col (str): Column names.
+        lookback_breakout, lookback_pullback (int): Lookback periods.
+        pullback_threshold (float): Threshold for pullback validation.
 
     Returns:
-        pd.Series: Boolean series indicating where bullish divergence is detected.
-                   True means divergence detected at that point.
-    '''
-    if not isinstance(close, pd.Series) or not isinstance(rsi, pd.Series):
-        logger.error("detect_rsi_divergence_v2: Inputs must be pandas Series.")
-        return pd.Series(False, index=close.index if isinstance(close, pd.Series) else None)
-    if not close.index.equals(rsi.index):
-        logger.error("detect_rsi_divergence_v2: Price and RSI Series must have the same index.")
-        # Attempt to align if possible, otherwise return False
-        try:
-            rsi = rsi.reindex(close.index)
-        except Exception:
-             return pd.Series(False, index=close.index)
-
-    divergence = pd.Series(False, index=close.index)
-
-    # Ensure input series are numpy arrays for Numba compatibility if we decide to use it
-    close_np = close.to_numpy(dtype=np.float64, na_value=np.nan)
-    rsi_np = rsi.to_numpy(dtype=np.float64, na_value=np.nan)
-
-    # Basic loop implementation (can be optimized with Numba later if needed)
-    for i in range(window, len(close_np)):
-        # Define the lookback window slice (inclusive of current point i)
-        window_slice_indices = range(i - window, i + 1)
-        price_window = close_np[window_slice_indices]
-        rsi_window = rsi_np[window_slice_indices]
-
-        # Check for NaNs in the lookback window
-        if np.isnan(price_window).any() or np.isnan(rsi_window).any():
-            continue # Skip if NaN values exist in the window
-
-        price_now = close_np[i]
-        rsi_now = rsi_np[i]
-
-        # Calculate window minimums (handling NaNs)
-        min_price_in_window = np.nanmin(price_window)
-        min_rsi_in_window = np.nanmin(rsi_window)
-
-        # === MODIFIED Bullish Divergence Condition ===
-        # Price is more than 1% below the window minimum price
-        price_cond = price_now < (min_price_in_window * 0.99)
-        # RSI is more than 1% above the window minimum RSI
-        rsi_cond = rsi_now > (min_rsi_in_window * 1.01)
-
-        if price_cond and rsi_cond:
-            divergence.iloc[i] = True
-
-    logger.info(f"Calculated RSI Bullish Divergence signals (window={window}, modified logic). Found {divergence.sum()} divergence points.")
-    return divergence
-# --- END NEW FUNCTION ---
-
-# === Placeholder for Volume Profile / PoC Calculation ===
-def calculate_poc(df: pd.DataFrame, lookback: int = 50, price_col: str = 'Close', volume_col: str = 'Volume') -> Optional[float]:
+        pd.Series: Series containing signals (0, 1, 2, -1, -2) with the same index as df.
     """
-    Calculates the Point of Control (PoC) using a simple volume-weighted approach
-    over a given lookback period. This is a simplified approximation.
+    if df is None or df.empty or not all(c in df.columns for c in [high_col, low_col, price_col]):
+        logger.warning("detect_trendline_breakout_pullback: Invalid input.")
+        return pd.Series(dtype=np.int8)
+
+    high_np = df[high_col].to_numpy(dtype=np.float64)
+    low_np = df[low_col].to_numpy(dtype=np.float64)
+    close_np = df[price_col].to_numpy(dtype=np.float64)
+
+    # Handle potential NaNs before passing to Numba
+    if np.isnan(high_np).any() or np.isnan(low_np).any() or np.isnan(close_np).any():
+         logger.warning("detect_trendline_breakout_pullback: NaN values found in input data. Attempting to fill.")
+         # Simple forward fill, consider better NaN handling if necessary
+         df_filled = df[[high_col, low_col, price_col]].ffill().bfill()
+         high_np = df_filled[high_col].to_numpy(dtype=np.float64)
+         low_np = df_filled[low_col].to_numpy(dtype=np.float64)
+         close_np = df_filled[price_col].to_numpy(dtype=np.float64)
+         if np.isnan(high_np).any() or np.isnan(low_np).any() or np.isnan(close_np).any():
+             logger.error("detect_trendline_breakout_pullback: Failed to fill NaNs. Cannot proceed.")
+             return pd.Series(dtype=np.int8)
+
+
+    signals_np = find_breakout_pullback_nb(
+        high_np, low_np, close_np,
+        lookback_breakout, lookback_pullback, pullback_threshold
+    )
+    return pd.Series(signals_np, index=df.index)
+
+
+# POC Calculation (Keeping strategy_utils version) - Note: Multiple definitions found, consolidating
+# Removed duplicate/older POC function definitions. Keeping one primary version.
+def calculate_poc(df: pd.DataFrame, lookback: int = 50, price_col: str = 'Close', volume_col: str = 'Volume', num_bins: int = 20) -> Optional[float]:
+    """
+    Calculates the Point of Control (POC) over a lookback period.
+    POC is the price level with the highest traded volume.
 
     Args:
         df (pd.DataFrame): DataFrame with price and volume data.
-        lookback (int): Number of periods to look back.
-        price_col (str): Column name for price (used for grouping).
-        volume_col (str): Column name for volume.
+        lookback (int): Lookback period for calculation.
+        price_col (str): Price column (e.g., 'Close', 'High', 'Low', or typical price like HLC/3).
+        volume_col (str): Volume column.
+        num_bins (int): Number of price bins for volume profile calculation.
 
     Returns:
-        Optional[float]: The price level with the highest volume (PoC) in the lookback,
-                         or None if calculation fails.
+        Optional[float]: The Point of Control price level, or None if calculation fails.
     """
-    if df is None or df.empty or price_col not in df.columns or volume_col not in df.columns:
-        logger.warning("calculate_poc: Invalid input DataFrame or missing columns.")
+    if df is None or df.empty or not all(c in df.columns for c in [price_col, volume_col]):
+        logger.warning(f"calculate_poc: Invalid input or missing columns '{price_col}', '{volume_col}'.")
         return None
     if len(df) < lookback:
-        logger.warning(f"calculate_poc: Insufficient data ({len(df)}) for lookback ({lookback}).")
+        logger.debug(f"calculate_poc: Insufficient data ({len(df)}) for lookback ({lookback}).")
         return None
-
-    recent_df = df.iloc[-lookback:]
 
     try:
-        # Group by price level (can be sensitive to exact price; rounding might be needed)
-        # For simplicity, let's round the price to a reasonable number of decimals
-        # Assuming crypto, maybe 2 decimal places? Adjust as needed.
-        if recent_df[price_col].max() > 1000: # Heuristic for crypto
-            price_rounded = recent_df[price_col].round(2)
-        else: # Assume stocks/lower priced assets
-            price_rounded = recent_df[price_col].round(4)
+        # Select the lookback period
+        df_lookback = df.iloc[-lookback:]
 
-        volume_at_price = recent_df.groupby(price_rounded)[volume_col].sum()
-
-        if volume_at_price.empty:
-            logger.warning("calculate_poc: No volume data found after grouping by price.")
+        # Determine price range and create bins
+        price_min = df_lookback[price_col].min()
+        price_max = df_lookback[price_col].max()
+        if pd.isna(price_min) or pd.isna(price_max) or price_max == price_min:
+            logger.debug("calculate_poc: Cannot determine price range or price is flat.")
             return None
 
-        poc_price = volume_at_price.idxmax()
-        logger.debug(f"Calculated PoC over last {lookback} periods: {poc_price}")
-        return float(poc_price)
+        # Create price bins - linspace includes endpoints
+        bins = np.linspace(price_min, price_max, num_bins + 1)
+
+        # Assign each price to a bin - use bin centers later
+        df_lookback['price_bin'] = pd.cut(df_lookback[price_col], bins=bins, labels=False, include_lowest=True)
+
+        # Calculate volume per bin
+        volume_profile = df_lookback.groupby('price_bin')[volume_col].sum()
+
+        if volume_profile.empty:
+            logger.debug("calculate_poc: Volume profile is empty after grouping.")
+            return None
+
+        # Find the bin index with the maximum volume
+        poc_bin_index = volume_profile.idxmax()
+
+        # Calculate the center price of the POC bin
+        # Bin edges are in `bins`. Bin `i` corresponds to edges `bins[i]` and `bins[i+1]`
+        poc_price = (bins[int(poc_bin_index)] + bins[int(poc_bin_index) + 1]) / 2.0
+
+        logger.debug(f"Calculated POC over lookback {lookback}: {poc_price:.4f}")
+        return poc_price
 
     except Exception as e:
-        logger.error(f"calculate_poc: Error calculating PoC: {e}", exc_info=True)
+        logger.error(f"calculate_poc: Error calculating POC: {e}", exc_info=True)
         return None
 
-# =========================================================
-# === SECTION: Functions Potentially Useful for Backtrader ===
-# These might need adjustments to work directly within backtrader's structure
-# =========================================================
+# --- Other Numba Optimized Functions (Keep from strategy_utils) ---
 
 @numba.njit('boolean(f8[:], f8[:], i8)')
 def check_last_crossing_nb(series1: np.ndarray, series2: np.ndarray, lookback: int) -> bool:
-    """Numba optimized check for recent crossover/crossunder."""
+    """
+    Numba-optimized check if series1 crossed above series2 within the recent lookback period.
+    Assumes series are aligned and non-NaN within the lookback.
+    """
     n = len(series1)
-    if n < lookback + 1:
-        return False # Not enough data
-    
-    current_diff = series1[n-1] - series2[n-1]
-    
-    for i in range(n - 2, n - lookback - 1, -1):
-        prev_diff = series1[i] - series2[i]
-        # Check if the sign of the difference changed (indicates a cross)
-        if np.sign(current_diff) != np.sign(prev_diff) and prev_diff != 0:
-            return True # A cross happened within the lookback period
-    return False
+    if n < lookback + 1: return False # Need at least lookback+1 points to check crossing
 
-def check_sma_crossover(df: pd.DataFrame, short_window: int, long_window: int, lookback: int = 3) -> str:
-    """Checks for recent SMA crossovers (Golden/Death Cross)."""
-    sma_short_col = f'SMA_{short_window}'
-    sma_long_col = f'SMA_{long_window}'
+    crossed_within_lookback = False
+    for i in range(n - lookback, n):
+         # Check if crossed between i-1 and i
+         if series1[i-1] <= series2[i-1] and series1[i] > series2[i]:
+             crossed_within_lookback = True
+             break
+    return crossed_within_lookback
 
-    if sma_short_col not in df.columns or sma_long_col not in df.columns:
-        logger.warning("check_sma_crossover: Required SMA columns not found.")
+def check_sma_crossover(df: pd.DataFrame, short_window: int, long_window: int, price_col: str = 'Close', lookback: int = 3) -> str:
+    """
+    Checks for Golden Cross (short SMA crosses above long SMA) or Death Cross
+    (short SMA crosses below long SMA) within the recent `lookback` period.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing the price data.
+        short_window (int): Window for the short-term SMA.
+        long_window (int): Window for the long-term SMA.
+        price_col (str): Column to calculate SMAs on.
+        lookback (int): How many recent periods to check for a crossing event.
+
+    Returns:
+        str: 'golden', 'death', or 'none'.
+    """
+    if df is None or df.empty or price_col not in df.columns:
+        logger.warning("check_sma_crossover: Invalid input.")
         return 'none'
-    if len(df) < max(short_window, long_window) + lookback:
-         logger.warning("check_sma_crossover: Insufficient data for lookback check.")
-         return 'none'
+    if len(df) < long_window + lookback: # Need enough data for long SMA and lookback
+        logger.debug("check_sma_crossover: Insufficient data.")
+        return 'none'
 
-    sma_short = df[sma_short_col].values
-    sma_long = df[sma_long_col].values
-    
-    # Check for Golden Cross (Short SMA crosses above Long SMA)
-    if sma_short[-1] > sma_long[-1]: # Currently above
-        # Use Numba function to check if a crossunder happened recently
-        crossed_recently = check_last_crossing_nb(sma_short, sma_long, lookback)
-        if crossed_recently and sma_short[-lookback-1] < sma_long[-lookback-1]: # Check direction before cross
-             logger.info(f"Golden Cross detected within last {lookback} periods.")
-             return 'golden'
-            
-    # Check for Death Cross (Short SMA crosses below Long SMA)
-    elif sma_short[-1] < sma_long[-1]: # Currently below
-         crossed_recently = check_last_crossing_nb(sma_short, sma_long, lookback)
-         if crossed_recently and sma_short[-lookback-1] > sma_long[-lookback-1]: # Check direction before cross
-             logger.info(f"Death Cross detected within last {lookback} periods.")
-             return 'death'
+    try:
+        sma_short = calculate_sma(df, window=short_window, feature_col=price_col)
+        sma_long = calculate_sma(df, window=long_window, feature_col=price_col)
 
-    return 'none'
+        if sma_short.empty or sma_long.empty:
+             logger.debug("check_sma_crossover: SMA calculation failed.")
+             return 'none'
 
-# Placeholder for BreakoutPullback adapted for backtrader (might need class structure)
-# This needs access to `self.data` within a backtrader Strategy
-# def detect_breakout_pullback_backtrader(data, lookback_breakout, lookback_pullback, threshold):
-#     high = data.high.get(size=lookback_breakout + lookback_pullback + 1)
-#     low = data.low.get(size=lookback_breakout + lookback_pullback + 1)
-#     close = data.close.get(size=lookback_breakout + lookback_pullback + 1)
-#     # ... rest of the logic using array indexing ...
-#     # This would likely be part of the next() method in a Strategy
-#     pass
+        # Align series and check for NaNs in the lookback period
+        sma_short, sma_long = sma_short.align(sma_long, join='inner')
+        recent_short = sma_short.iloc[-(lookback+1):]
+        recent_long = sma_long.iloc[-(lookback+1):]
 
-# === NEW Numba function including Volume Surge ===
+        if recent_short.isnull().any() or recent_long.isnull().any():
+             logger.debug("check_sma_crossover: NaNs found in recent SMA data.")
+             return 'none'
+
+        # Check for Golden Cross
+        crossed_above = False
+        for i in range(1, len(recent_short)):
+            if recent_short.iloc[i-1] <= recent_long.iloc[i-1] and recent_short.iloc[i] > recent_long.iloc[i]:
+                crossed_above = True
+                break
+        if crossed_above:
+            logger.info(f"Golden Cross detected within last {lookback} periods.")
+            return 'golden'
+
+        # Check for Death Cross
+        crossed_below = False
+        for i in range(1, len(recent_short)):
+             if recent_short.iloc[i-1] >= recent_long.iloc[i-1] and recent_short.iloc[i] < recent_long.iloc[i]:
+                 crossed_below = True
+                 break
+        if crossed_below:
+            logger.info(f"Death Cross detected within last {lookback} periods.")
+            return 'death'
+
+        return 'none'
+
+    except Exception as e:
+        logger.error(f"check_sma_crossover: Error checking crossover: {e}", exc_info=True)
+        return 'none'
+
+
 @numba.njit('i1[:](f8[:], f8[:], f8[:], f8[:], i8, i8, f8, i8, f8)', cache=True)
 def find_volume_breakout_pullback_nb(high: np.ndarray,
                                      low: np.ndarray,
                                      close: np.ndarray,
                                      volume: np.ndarray,
-                                     lookback_breakout: int,
-                                     lookback_pullback: int,
-                                     pullback_threshold: float,
-                                     volume_lookback: int,
-                                     volume_multiplier: float) -> np.ndarray:
+                                     lookback_breakout: int, # For trendline
+                                     lookback_pullback: int, # For pullback check
+                                     pullback_threshold: float, # For pullback validation
+                                     volume_lookback: int, # For volume average
+                                     volume_multiplier: float # For volume spike detection
+                                     ) -> np.ndarray:
     """
-    Numba-optimized function to detect breakouts with volume surge, followed by a pullback.
-    Returns an array where:
-    1 = bullish breakout with volume surge + pullback
-    0 = none
-    (Currently only implements bullish scenario)
+    Numba-optimized function combining trendline breakout/pullback with volume spike confirmation.
+
+    Args:
+        high, low, close, volume (np.ndarray): Price and volume data.
+        lookback_breakout (int): Window for trendline highs/lows.
+        lookback_pullback (int): Window to check pullback.
+        pullback_threshold (float): Relative threshold for pullback.
+        volume_lookback (int): Window for average volume calculation.
+        volume_multiplier (float): Factor to detect volume spike.
+
+    Returns:
+        np.ndarray: Signal array similar to find_breakout_pullback_nb, but only
+                      returns signals if confirmed by a volume spike.
+                      (0: None, 1: Vol Breakout Up, 2: Vol Pullback Support,
+                       -1: Vol Breakout Down, -2: Vol Pullback Resistance).
     """
     n = len(close)
     signals = np.zeros(n, dtype=np.int8)
-    required_len = max(lookback_breakout, volume_lookback) + lookback_pullback + 1
+    min_len = max(lookback_breakout, volume_lookback) + lookback_pullback
 
-    for current_index in range(required_len - 1, n):
-        found_signal_in_inner = False
-        for i in range(lookback_pullback, 0, -1):
-            if found_signal_in_inner: break
+    if n < min_len:
+        return signals # Not enough data
 
-            potential_breakout_index = current_index - i
-            if potential_breakout_index < 0: continue
-            if potential_breakout_index < lookback_breakout or potential_breakout_index < volume_lookback:
-                continue
+    for i in range(min_len -1, n):
+        # --- Volume Spike Check ---
+        if i < volume_lookback: continue # Need enough history for volume average
+        volume_window = volume[i - volume_lookback : i] # Exclude current bar volume
+        avg_volume = np.mean(volume_window)
+        current_volume = volume[i]
+        is_volume_spike = current_volume > (avg_volume * volume_multiplier) if avg_volume > 0 else False
 
-            potential_breakout_high = high[potential_breakout_index]
-            # potential_breakout_low = low[potential_breakout_index] # Not used for bullish only
-            breakout_volume = volume[potential_breakout_index]
+        if not is_volume_spike:
+            continue # Skip if no volume spike
 
-            # --- Define Breakout Level --- 
-            breakout_level_period_start = potential_breakout_index - lookback_breakout
-            breakout_level_period_end = potential_breakout_index
-            breakout_level_highs = high[breakout_level_period_start:breakout_level_period_end]
-            if breakout_level_highs.size == 0: continue
-            highest_high_before_breakout = np.max(breakout_level_highs)
+        # --- Trendline Check (copied logic from find_breakout_pullback_nb) ---
+        current_relative_idx = lookback_breakout - 1 # Index within the breakout window
 
-            # --- Define Average Volume --- 
-            volume_period_start = potential_breakout_index - volume_lookback
-            volume_period_end = potential_breakout_index
-            recent_volumes = volume[volume_period_start:volume_period_end]
-            if recent_volumes.size == 0: continue
-            avg_volume = np.mean(recent_volumes)
-            # Avoid division by zero or issues with very low volume
-            if avg_volume <= 1e-9: avg_volume = 1e-9
+        # Upper Trendline
+        highs_window = high[i - lookback_breakout + 1 : i + 1]
+        if len(highs_window) >= 2:
+            # (Simplified peak finding - assumes last two points for trend)
+            # Replace with robust peak finding if needed
+             p1_idx, p1_val = 0, highs_window[0]
+             p2_idx, p2_val = len(highs_window)-2, highs_window[-2] # Example: connect first and second to last high
+             if p2_idx > p1_idx:
+                 slope_upper = (p2_val - p1_val) / (p2_idx - p1_idx) if (p2_idx - p1_idx) != 0 else 0
+                 intercept_upper = p1_val - slope_upper * p1_idx
+                 trendline_val_upper = slope_upper * current_relative_idx + intercept_upper
 
-            # --- Check for Bullish Breakout with Volume Surge --- 
-            is_bullish_breakout_bar = potential_breakout_high > highest_high_before_breakout
-            volume_surge = breakout_volume > (avg_volume * volume_multiplier)
+                 # Check for Volume Confirmed Breakout Up
+                 if close[i] > trendline_val_upper and close[i-1] <= (slope_upper * (current_relative_idx - 1) + intercept_upper):
+                     signals[i] = 1 # Vol Breakout Up
 
-            if is_bullish_breakout_bar and volume_surge:
-                # Breakout+Volume Surge identified at `potential_breakout_index`
-                # Now, check for pullback
-                pullback_check_start = potential_breakout_index + 1
-                pullback_check_end = current_index + 1
-                pullback_period_lows = low[pullback_check_start:pullback_check_end]
+                     # Check for Volume Confirmed Pullback to Support
+                     if i >= min_len:
+                         broke_out = False
+                         pullback_valid = False
+                         for j in range(1, lookback_pullback + 1):
+                              prev_idx_rel = current_relative_idx - j
+                              prev_trend_val = slope_upper * prev_idx_rel + intercept_upper
+                              if close[i-j] > prev_trend_val: broke_out = True
+                              if broke_out and low[i] <= trendline_val_upper * (1 + pullback_threshold) and low[i] >= trendline_val_upper * (1-pullback_threshold):
+                                  pullback_valid = True
+                                  break
+                         if pullback_valid: signals[i] = 2 # Vol Pullback Support
 
-                if pullback_period_lows.size > 0:
-                    lowest_low_after_breakout = np.min(pullback_period_lows)
-                    current_close_val = close[current_index]
+        # Lower Trendline
+        lows_window = low[i - lookback_breakout + 1 : i + 1]
+        if len(lows_window) >= 2:
+            # (Simplified trough finding)
+            p1_idx_low, p1_val_low = 0, lows_window[0]
+            p2_idx_low, p2_val_low = len(lows_window)-2, lows_window[-2]
+            if p2_idx_low > p1_idx_low:
+                slope_lower = (p2_val_low - p1_val_low) / (p2_idx_low - p1_idx_low) if (p2_idx_low - p1_idx_low) != 0 else 0
+                intercept_lower = p1_val_low - slope_lower * p1_idx_low
+                trendline_val_lower = slope_lower * current_relative_idx + intercept_lower
 
-                    # Pullback must touch near the breakout level
-                    pullback_valid = lowest_low_after_breakout <= highest_high_before_breakout * (1 + pullback_threshold)
-                    # Current price must be above the lowest point of the pullback (bounce)
-                    bounce_valid = current_close_val > lowest_low_after_breakout
+                # Check for Volume Confirmed Breakout Down
+                if close[i] < trendline_val_lower and close[i-1] >= (slope_lower * (current_relative_idx - 1) + intercept_lower):
+                    signals[i] = -1 # Vol Breakout Down
 
-                    if pullback_valid and bounce_valid:
-                        signals[current_index] = 1 # Bullish signal
-                        found_signal_in_inner = True
-                        break # Exit inner loop, found signal
-                # Break inner loop even if pullback failed, as we processed the most recent potential breakout
-                break
+                    # Check for Volume Confirmed Pullback to Resistance
+                    if i >= min_len:
+                        broke_down = False
+                        pullback_valid_res = False
+                        for j in range(1, lookback_pullback + 1):
+                             prev_idx_rel = current_relative_idx - j
+                             prev_trend_val_low = slope_lower * prev_idx_rel + intercept_lower
+                             if close[i-j] < prev_trend_val_low: broke_down = True
+                             if broke_down and high[i] >= trendline_val_lower * (1 - pullback_threshold) and high[i] <= trendline_val_lower * (1 + pullback_threshold):
+                                  pullback_valid_res = True
+                                  break
+                        if pullback_valid_res: signals[i] = -2 # Vol Pullback Resistance
 
-            # --- Bearish Check (Skipped for this strategy) ---
-            # is_bearish_breakdown_bar = potential_breakout_low < lowest_low_before_breakout
-            # ... (volume surge check for bearish)
-            # ... (pullback check for bearish)
-
-    return signals
-# --- END NEW Numba function ---
-
-# --- NEW RSI Divergence Function (as requested) ---
-def detect_rsi_divergence_v2(close: pd.Series, rsi: pd.Series, window: int = 14):
-    '''
-    Detects simple bullish RSI divergence over a rolling window.
-    - MODIFIED: Price makes a lower low (< 1% below window min), RSI makes a higher low (> 1% above window min).
-
-    Args:
-        close (pd.Series): Series of closing prices.
-        rsi (pd.Series): Series of RSI values.
-        window (int): Lookback window for divergence detection.
-
-    Returns:
-        pd.Series: Boolean series indicating where bullish divergence is detected.
-                   True means divergence detected at that point.
-    '''
-    if not isinstance(close, pd.Series) or not isinstance(rsi, pd.Series):
-        logger.error("detect_rsi_divergence_v2: Inputs must be pandas Series.")
-        return pd.Series(False, index=close.index if isinstance(close, pd.Series) else None)
-    if not close.index.equals(rsi.index):
-        logger.error("detect_rsi_divergence_v2: Price and RSI Series must have the same index.")
-        # Attempt to align if possible, otherwise return False
-        try:
-            rsi = rsi.reindex(close.index)
-        except Exception:
-             return pd.Series(False, index=close.index)
-
-    divergence = pd.Series(False, index=close.index)
-
-    # Ensure input series are numpy arrays for Numba compatibility if we decide to use it
-    close_np = close.to_numpy(dtype=np.float64, na_value=np.nan)
-    rsi_np = rsi.to_numpy(dtype=np.float64, na_value=np.nan)
-
-    # Basic loop implementation (can be optimized with Numba later if needed)
-    for i in range(window, len(close_np)):
-        # Define the lookback window slice (inclusive of current point i)
-        window_slice_indices = range(i - window, i + 1)
-        price_window = close_np[window_slice_indices]
-        rsi_window = rsi_np[window_slice_indices]
-
-        # Check for NaNs in the lookback window
-        if np.isnan(price_window).any() or np.isnan(rsi_window).any():
-            continue # Skip if NaN values exist in the window
-
-        price_now = close_np[i]
-        rsi_now = rsi_np[i]
-
-        # Calculate window minimums (handling NaNs)
-        min_price_in_window = np.nanmin(price_window)
-        min_rsi_in_window = np.nanmin(rsi_window)
-
-        # === MODIFIED Bullish Divergence Condition ===
-        # Price is more than 1% below the window minimum price
-        price_cond = price_now < (min_price_in_window * 0.99)
-        # RSI is more than 1% above the window minimum RSI
-        rsi_cond = rsi_now > (min_rsi_in_window * 1.01)
-
-        if price_cond and rsi_cond:
-            divergence.iloc[i] = True
-
-    logger.info(f"Calculated RSI Bullish Divergence signals (window={window}, modified logic). Found {divergence.sum()} divergence points.")
-    return divergence
-# --- END NEW FUNCTION ---
-
-# === Placeholder for Volume Profile / PoC Calculation ===
-def calculate_poc(df: pd.DataFrame, lookback: int = 50, price_col: str = 'Close', volume_col: str = 'Volume') -> Optional[float]:
-    """
-    Calculates the Point of Control (PoC) using a simple volume-weighted approach
-    over a given lookback period. This is a simplified approximation.
-
-    Args:
-        df (pd.DataFrame): DataFrame with price and volume data.
-        lookback (int): Number of periods to look back.
-        price_col (str): Column name for price (used for grouping).
-        volume_col (str): Column name for volume.
-
-    Returns:
-        Optional[float]: The price level with the highest volume (PoC) in the lookback,
-                         or None if calculation fails.
-    """
-    if df is None or df.empty or price_col not in df.columns or volume_col not in df.columns:
-        logger.warning("calculate_poc: Invalid input DataFrame or missing columns.")
-        return None
-    if len(df) < lookback:
-        logger.warning(f"calculate_poc: Insufficient data ({len(df)}) for lookback ({lookback}).")
-        return None
-
-    recent_df = df.iloc[-lookback:]
-
-    try:
-        # Group by price level (can be sensitive to exact price; rounding might be needed)
-        # For simplicity, let's round the price to a reasonable number of decimals
-        # Assuming crypto, maybe 2 decimal places? Adjust as needed.
-        if recent_df[price_col].max() > 1000: # Heuristic for crypto
-            price_rounded = recent_df[price_col].round(2)
-        else: # Assume stocks/lower priced assets
-            price_rounded = recent_df[price_col].round(4)
-
-        volume_at_price = recent_df.groupby(price_rounded)[volume_col].sum()
-
-        if volume_at_price.empty:
-            logger.warning("calculate_poc: No volume data found after grouping by price.")
-            return None
-
-        poc_price = volume_at_price.idxmax()
-        logger.debug(f"Calculated PoC over last {lookback} periods: {poc_price}")
-        return float(poc_price)
-
-    except Exception as e:
-        logger.error(f"calculate_poc: Error calculating PoC: {e}", exc_info=True)
-        return None
-
-# =========================================================
-# === SECTION: Functions Potentially Useful for Backtrader ===
-# These might need adjustments to work directly within backtrader's structure
-# =========================================================
-
-@numba.njit('boolean(f8[:], f8[:], i8)')
-def check_last_crossing_nb(series1: np.ndarray, series2: np.ndarray, lookback: int) -> bool:
-    """Numba optimized check for recent crossover/crossunder."""
-    n = len(series1)
-    if n < lookback + 1:
-        return False # Not enough data
-    
-    current_diff = series1[n-1] - series2[n-1]
-    
-    for i in range(n - 2, n - lookback - 1, -1):
-        prev_diff = series1[i] - series2[i]
-        # Check if the sign of the difference changed (indicates a cross)
-        if np.sign(current_diff) != np.sign(prev_diff) and prev_diff != 0:
-            return True # A cross happened within the lookback period
-    return False
-
-def check_sma_crossover(df: pd.DataFrame, short_window: int, long_window: int, lookback: int = 3) -> str:
-    """Checks for recent SMA crossovers (Golden/Death Cross)."""
-    sma_short_col = f'SMA_{short_window}'
-    sma_long_col = f'SMA_{long_window}'
-
-    if sma_short_col not in df.columns or sma_long_col not in df.columns:
-        logger.warning("check_sma_crossover: Required SMA columns not found.")
-        return 'none'
-    if len(df) < max(short_window, long_window) + lookback:
-         logger.warning("check_sma_crossover: Insufficient data for lookback check.")
-         return 'none'
-
-    sma_short = df[sma_short_col].values
-    sma_long = df[sma_long_col].values
-    
-    # Check for Golden Cross (Short SMA crosses above Long SMA)
-    if sma_short[-1] > sma_long[-1]: # Currently above
-        # Use Numba function to check if a crossunder happened recently
-        crossed_recently = check_last_crossing_nb(sma_short, sma_long, lookback)
-        if crossed_recently and sma_short[-lookback-1] < sma_long[-lookback-1]: # Check direction before cross
-             logger.info(f"Golden Cross detected within last {lookback} periods.")
-             return 'golden'
-            
-    # Check for Death Cross (Short SMA crosses below Long SMA)
-    elif sma_short[-1] < sma_long[-1]: # Currently below
-         crossed_recently = check_last_crossing_nb(sma_short, sma_long, lookback)
-         if crossed_recently and sma_short[-lookback-1] > sma_long[-lookback-1]: # Check direction before cross
-             logger.info(f"Death Cross detected within last {lookback} periods.")
-             return 'death'
-
-    return 'none'
-
-# Placeholder for BreakoutPullback adapted for backtrader (might need class structure)
-# This needs access to `self.data` within a backtrader Strategy
-# def detect_breakout_pullback_backtrader(data, lookback_breakout, lookback_pullback, threshold):
-#     high = data.high.get(size=lookback_breakout + lookback_pullback + 1)
-#     low = data.low.get(size=lookback_breakout + lookback_pullback + 1)
-#     close = data.close.get(size=lookback_breakout + lookback_pullback + 1)
-#     # ... rest of the logic using array indexing ...
-#     # This would likely be part of the next() method in a Strategy
-#     pass 
+    return signals 

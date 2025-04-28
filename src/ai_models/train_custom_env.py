@@ -2,6 +2,7 @@ import logging
 import os
 import pandas as pd
 import sys
+import argparse # Import argparse
 
 # --- Project Structure Adjustment ---
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,10 +52,10 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # --- Training Configuration --- 
-DEFAULT_TICKER = "AAPL" # Example ticker
+# DEFAULT_TICKER = "AAPL" # Removed hardcoded default
+DEFAULT_TIMESTEPS = 500000 # Default training duration
 DEFAULT_START_DATE = "2020-01-01"
 DEFAULT_END_DATE = "2023-12-31"
-DEFAULT_TIMESTEPS = 500000 # Further increased training duration for deeper learning
 DEFAULT_RSI_PERIOD = 14
 DEFAULT_SMA_PERIOD = 7
 DEFAULT_MACD_FAST = 12 # Default MACD fast period
@@ -76,14 +77,27 @@ DEFAULT_BATCH_SIZE = 64
 os.makedirs(DEFAULT_MODEL_DIR, exist_ok=True)
 os.makedirs(DEFAULT_LOG_DIR, exist_ok=True)
 
+# --- Argument Parser --- 
+parser = argparse.ArgumentParser(description="Train a PPO agent using the custom TradingEnv.")
+parser.add_argument("--ticker", type=str, required=True,
+                    help="Ticker symbol to train the agent for (e.g., AAPL, MSFT).")
+parser.add_argument("--total_timesteps", type=int, default=DEFAULT_TIMESTEPS,
+                    help=f"Total number of training timesteps (default: {DEFAULT_TIMESTEPS}).")
+# Add other parameters as arguments if needed (e.g., start/end date, indicator periods)
+args = parser.parse_args()
+
+# --- Use parsed arguments ---
+TICKER_TO_TRAIN = args.ticker.upper()
+TOTAL_TIMESTEPS_TO_TRAIN = args.total_timesteps
+
 def train_custom_environment_agent(
-    ticker: str = DEFAULT_TICKER,
+    ticker: str, # Removed default
+    total_timesteps: int, # Removed default
     start_date: str = DEFAULT_START_DATE,
     end_date: str = DEFAULT_END_DATE,
     rsi_period: int = DEFAULT_RSI_PERIOD,
     sma_period: int = DEFAULT_SMA_PERIOD,
     initial_balance: float = DEFAULT_INITIAL_BALANCE,
-    total_timesteps: int = DEFAULT_TIMESTEPS,
     model_save_path: str | None = None,
     log_path: str = DEFAULT_LOG_DIR
 ) -> str | None:
@@ -166,6 +180,7 @@ def train_custom_environment_agent(
 
     # --- 5. Save Model ---
     if model_save_path is None:
+        # Ensure model save path uses the provided ticker and timesteps
         model_save_path = os.path.join(DEFAULT_MODEL_DIR, f"ppo_{ticker}_custom_env_{total_timesteps}.zip")
         
     logger.info(f"Step 5: Saving trained model to {model_save_path}")
@@ -181,10 +196,14 @@ if __name__ == "__main__":
     logger.info("=======================================================")
     logger.info(" Starting Custom TradingEnv Agent Training Script  ")
     logger.info("=======================================================")
-    
-    # Example: Train PPO for Apple with default settings
-    saved_path = train_custom_environment_agent(ticker="AAPL")
-    
+
+    # Call the training function with parsed arguments
+    saved_path = train_custom_environment_agent(
+        ticker=TICKER_TO_TRAIN,
+        total_timesteps=TOTAL_TIMESTEPS_TO_TRAIN
+        # Pass other args if they were added to the parser
+    )
+
     if saved_path:
         # Use standard f-string formatting
         print(f"\nTraining complete. Model saved to: {saved_path}")

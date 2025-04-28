@@ -5,19 +5,23 @@ import logging
 from datetime import datetime, timedelta
 import math # 괴리율 계산 시 사용
 
+# <<< 임포트 경로 수정 >>>
 # notifier 모듈 로드 (Slack 알림용)
 try:
-    import notifier
-except ImportError:
-    logging.error("notifier.py 파일을 찾을 수 없습니다.")
+    # import notifier # 이전 방식
+    from src.utils import notifier
+except ImportError as e:
+    logging.error(f"src.utils.notifier 모듈 로드 실패: {e}")
     notifier = None
 
-# strategy_utils 모듈 로드 (데이터 로드용, 선택 사항)
+# strategy_utils 모듈 로드 -> common 모듈 사용으로 변경
 try:
-    import strategy_utils
-except ImportError:
-    logging.error("strategy_utils.py 파일을 찾을 수 없습니다.")
+    # import strategy_utils # 이전 방식
+    from src.utils import common as strategy_utils # common.py 로 변경
+except ImportError as e:
+    logging.error(f"src.utils.common 모듈 로드 실패: {e}")
     strategy_utils = None
+# <<< 끝 >>>
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

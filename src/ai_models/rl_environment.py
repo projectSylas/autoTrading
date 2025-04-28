@@ -153,7 +153,7 @@ class TradingEnv(gym.Env):
         if self.position_held == 1:
             # Avoid division by zero if entry_price is somehow 0
             if self.entry_price != 0:
-                current_pnl = (current_price - self.entry_price) / self.entry_price
+            current_pnl = (current_price - self.entry_price) / self.entry_price
             else:
                  current_pnl = 0.0
 
@@ -204,7 +204,7 @@ class TradingEnv(gym.Env):
     def _calculate_reward(self, current_price: float, next_price: float, action: int) -> float:
         """Calculates the reward for the taken action, incentivizing profitable sells."""
         reward = 0.0
-        pnl_change = (next_price - current_price) / current_price
+            pnl_change = (next_price - current_price) / current_price
 
         if self.position_held == 1: # Currently holding a position
             # 1. Reward/Penalty for Holding (Adjusted Multiplier)

@@ -1,4 +1,5 @@
 import logging
+import argparse # Import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,10 +13,11 @@ from src.ai_models.rl_environment import TradingEnv # Import custom environment
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Parameters ---
-TICKER = "AAPL"
+# TICKER = "AAPL" # Removed hardcoded ticker
+DEFAULT_TICKER = "AAPL" # Define a default ticker
 BACKTEST_PERIOD = "1y" # Use last 1 year for backtesting
 BACKTEST_INTERVAL = "1h" # Use 1-hour data
-MODEL_PATH = "models/custom_env/ppo_AAPL_custom_env_500000.zip" # Path to the newly trained model
+# MODEL_PATH = "models/custom_env/ppo_AAPL_custom_env_500000.zip" # Path will be constructed dynamically
 INITIAL_BALANCE = 10000 # Same as training
 RSI_PERIOD = 14 # Same as training
 SMA_PERIOD = 7 # Same as training
@@ -25,18 +27,31 @@ ATR_WINDOW = 14
 BB_WINDOW = 20
 BB_DEV = 2
 
-def run_backtest():
+# --- Argument Parser ---
+parser = argparse.ArgumentParser(description="Run backtesting for a trained PPO agent.")
+parser.add_argument('--ticker', type=str, default=DEFAULT_TICKER,
+                    help=f'Ticker symbol to backtest (default: {DEFAULT_TICKER})')
+parser.add_argument('--model_steps', type=int, default=500000,
+                    help='Number of training steps for the model file (default: 500000)')
+args = parser.parse_args()
+
+# --- Use parsed arguments ---
+TICKER = args.ticker.upper() # Ensure ticker is uppercase
+MODEL_STEPS = args.model_steps
+MODEL_PATH = f"models/custom_env/ppo_{TICKER}_custom_env_{MODEL_STEPS}.zip" # Construct model path dynamically
+
+def run_backtest(ticker: str, model_path: str):
     """Runs the backtesting process for the trained PPO agent."""
     logging.info("=" * 50)
-    logging.info(" Starting Custom TradingEnv Agent Backtesting ")
+    logging.info(f" Starting Custom TradingEnv Agent Backtesting for {ticker} ")
     logging.info("=" * 50)
 
     # --- 1. Load Data ---
-    logging.info(f"Loading backtest data for {TICKER}: Period={BACKTEST_PERIOD}, Interval={BACKTEST_INTERVAL}")
-    df_backtest = get_historical_data(TICKER, period=BACKTEST_PERIOD, interval=BACKTEST_INTERVAL)
+    logging.info(f"Loading backtest data for {ticker}: Period={BACKTEST_PERIOD}, Interval={BACKTEST_INTERVAL}")
+    df_backtest = get_historical_data(ticker, period=BACKTEST_PERIOD, interval=BACKTEST_INTERVAL)
 
     if df_backtest is None or df_backtest.empty:
-        logging.error(f"Failed to load backtesting data for {TICKER}.")
+        logging.error(f"Failed to load backtesting data for {ticker}.")
         return
 
     logging.info(f"Backtest data loaded successfully. Shape: {df_backtest.shape}")
@@ -64,12 +79,12 @@ def run_backtest():
          return
 
     # --- 3. Load Model ---
-    logging.info(f"Loading trained model from: {MODEL_PATH}")
+    logging.info(f"Loading trained model from: {model_path}")
     try:
-        model = PPO.load(MODEL_PATH, env=env) # Provide env for observation/action space checks
+        model = PPO.load(model_path, env=env) # Provide env for observation/action space checks
         logging.info("Model loaded successfully.")
     except FileNotFoundError:
-        logging.error(f"Model file not found at {MODEL_PATH}")
+        logging.error(f"Model file not found at {model_path}")
         return
     except Exception as e:
         logging.error(f"Error loading model: {e}")
@@ -141,11 +156,11 @@ def run_backtest():
     total_return_pct = ((final_portfolio_value - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
     num_trades = len([t for t in trade_log if t.get('trade') == 'sell']) # Count closed trades (sell actions)
     # Use .get() for safety, though 'trade' should exist if appended
-    
+
     # TODO: Add more metrics: Sharpe Ratio, Max Drawdown, Win Rate etc.
 
     logging.info("-" * 30)
-    logging.info(f"Backtest Performance Summary ({TICKER})")
+    logging.info(f"Backtest Performance Summary ({ticker})") # Use ticker variable
     logging.info("-" * 30)
     logging.info(f"Initial Balance: ${INITIAL_BALANCE:,.2f}")
     logging.info(f"Final Portfolio Value: ${final_portfolio_value:,.2f}")
@@ -164,7 +179,7 @@ def run_backtest():
     # Plot 1: Portfolio Value Over Time
     plt.subplot(2, 1, 1)
     plt.plot(portfolio_values)
-    plt.title(f'{TICKER} Backtest: Portfolio Value Over Time ({BACKTEST_PERIOD} - {BACKTEST_INTERVAL})')
+    plt.title(f'{ticker} Backtest: Portfolio Value Over Time ({BACKTEST_PERIOD} - {BACKTEST_INTERVAL})') # Use ticker variable
     plt.ylabel('Portfolio Value ($)')
     plt.xlabel('Steps')
     plt.grid(True)
@@ -178,25 +193,33 @@ def run_backtest():
     sell_signals = [(t['step'], t['price']) for t in env.trade_history if t['type'] == 'sell']
 
     if buy_signals:
-        buy_indices = [valid_df.index[s[0]] for s in buy_signals]
-        buy_prices = [s[1] for s in buy_signals]
-        plt.scatter(buy_indices, buy_prices, label='Buy Signal', marker='^', color='green', s=100, alpha=1)
+        # Adjusted index access for potentially dropped initial rows
+        buy_steps = [s[0] for s in buy_signals if s[0] < len(valid_df.index)]
+        buy_indices = [valid_df.index[step] for step in buy_steps]
+        buy_prices = [s[1] for s in buy_signals if s[0] < len(valid_df.index)]
+        if buy_indices: # Ensure lists are not empty before scattering
+            plt.scatter(buy_indices, buy_prices, label='Buy Signal', marker='^', color='green', s=100, alpha=1)
 
     if sell_signals:
-        sell_indices = [valid_df.index[s[0]] for s in sell_signals]
-        sell_prices = [s[1] for s in sell_signals]
-        plt.scatter(sell_indices, sell_prices, label='Sell Signal', marker='v', color='red', s=100, alpha=1)
+        # Adjusted index access for potentially dropped initial rows
+        sell_steps = [s[0] for s in sell_signals if s[0] < len(valid_df.index)]
+        sell_indices = [valid_df.index[step] for step in sell_steps]
+        sell_prices = [s[1] for s in sell_signals if s[0] < len(valid_df.index)]
+        if sell_indices: # Ensure lists are not empty before scattering
+            plt.scatter(sell_indices, sell_prices, label='Sell Signal', marker='v', color='red', s=100, alpha=1)
 
-    plt.title(f'{TICKER} Price with Trading Signals')
+    plt.title(f'{ticker} Price with Trading Signals') # Use ticker variable
     plt.ylabel('Price ($)')
     plt.xlabel('Date')
     plt.legend()
     plt.grid(True)
 
     plt.tight_layout()
-    plt.savefig(f'backtest_results_{TICKER}_{BACKTEST_PERIOD}_{BACKTEST_INTERVAL}.png')
-    logging.info(f"Visualization saved to backtest_results_{TICKER}_{BACKTEST_PERIOD}_{BACKTEST_INTERVAL}.png")
+    save_path = f'backtest_results_{ticker}_{BACKTEST_PERIOD}_{BACKTEST_INTERVAL}.png' # Use ticker variable
+    plt.savefig(save_path)
+    logging.info(f"Visualization saved to {save_path}")
     # plt.show() # Uncomment to display the plot directly
 
 if __name__ == "__main__":
-    run_backtest() 
+    # Call run_backtest with parsed arguments
+    run_backtest(ticker=TICKER, model_path=MODEL_PATH) 

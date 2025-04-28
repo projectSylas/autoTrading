@@ -1,544 +1,459 @@
 # src/backtesting/backtest_runner.py
 
 import backtrader as bt
-import backtrader.feeds as btfeeds
 import pandas as pd
 from datetime import datetime
 import os
 import logging
-from typing import Optional
-import yfinance as yf # Import yfinance
+import yfinance as yf
+import sys
+from typing import Type # For Strategy type hint
 
-# Import the strategy class
-from src.backtesting.strategies.challenge_strategy_backtest import ChallengeStrategyBacktest
-# Import settings if needed for data paths or parameters
+# --- Project Structure Adjustment ---
+# Ensure the project root is in the Python path
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKTESTING_DIR = SRC_DIR
+PROJECT_ROOT = os.path.dirname(os.path.dirname(BACKTESTING_DIR))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+# --- Early Logging Setup ---
+# Setup logging as early as possible
+from src.utils.logging_config import setup_logging, APP_LOGGER_NAME
+try:
+    setup_logging()
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    logger.info("Initial logging setup complete.")
+except Exception as e:
+    # Fallback basic logging if setup fails
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    logger.error(f"Failed to configure logging using setup_logging: {e}. Using basic config.", exc_info=True)
+
+# --- Import Configuration and Utilities ---
+try:
 from src.config.settings import settings
-# Import data fetching utility if needed
-from src.utils.common import get_historical_data # Assuming this function exists
-# Import logging setup function and logger name
-from src.utils.logging_config import setup_logging, APP_LOGGER_NAME # Import logger name
+    logger.info("Settings loaded successfully.")
+except ImportError:
+    logger.error("Failed to import settings. Ensure config/settings.py exists and is valid.", exc_info=True)
+    # Define fallback defaults if settings fail to load
+    class FallbackSettings:
+        BACKTEST_TICKER = 'BTC-USD'
+        BACKTEST_PERIOD = '365d'
+        BACKTEST_INTERVAL = '1h'
+        DATA_SOURCE = 'yahoo'
+        CSV_DATA_PATH = None
+        BACKTEST_INITIAL_CASH = 10000.0
+        BACKTEST_COMMISSION = 0.001
+        BACKTEST_STAKE = 1
+        BACKTEST_PLOT = True
+        # Strategy defaults (add all required by ChallengeStrategyBacktest)
+        CHALLENGE_SMA_PERIOD = 20
+        CHALLENGE_RSI_PERIOD = 14
+        CHALLENGE_RSI_THRESHOLD = 30
+        CHALLENGE_VOLUME_AVG_PERIOD = 20
+        CHALLENGE_VOLUME_SURGE_RATIO = 1.5
+        CHALLENGE_DIVERGENCE_LOOKBACK = 14
+        CHALLENGE_BREAKOUT_LOOKBACK = 20
+        CHALLENGE_PULLBACK_LOOKBACK = 5
+        CHALLENGE_POC_LOOKBACK = 50
+        CHALLENGE_POC_THRESHOLD = 0.7
+        CHALLENGE_SL_RATIO = 0.05
+        CHALLENGE_TP_RATIO = 0.10
+        CHALLENGE_PULLBACK_THRESHOLD = 0.02
+    settings = FallbackSettings()
+    logger.warning("Using fallback settings due to import error.")
 
-# --- Setup Logging ---
-# Initial setup - call once when module loads
-# setup_logging() # <<< REMOVED from top level
-# --- End Setup Logging ---
+try:
+    from src.utils.common import get_historical_data
+    logger.info("Data fetching utility loaded.")
+except ImportError:
+    logger.error("Failed to import get_historical_data. Database source might not work.", exc_info=True)
+    def get_historical_data(*args, **kwargs): # Dummy function
+        logger.error("get_historical_data is not available.")
+        return None
 
-# --- Get the application-wide logger ---
-logger = logging.getLogger(APP_LOGGER_NAME) # Get logger instance first
-
-# --- Function to print logger handlers --- 
-def print_logger_handlers(stage: str):
-    current_logger = logging.getLogger(APP_LOGGER_NAME)
-    handlers = current_logger.handlers
-    print(f"--- Logger '{APP_LOGGER_NAME}' Handlers ({stage}) ---")
-    if not handlers:
-        print("  No handlers found.")
+# --- Import the Strategy ---
+try:
+    # Explicitly import the intended strategy
+    from src.backtesting.strategies.challenge_strategy_backtest import ChallengeStrategyBacktest
+    logger.info(f"Strategy class '{ChallengeStrategyBacktest.__name__}' loaded.")
+    strategy_to_run: Type[bt.Strategy] = ChallengeStrategyBacktest # Type hint for clarity
+except ImportError:
+    logger.error("Failed to import ChallengeStrategyBacktest. Ensure src/backtesting/strategies/challenge_strategy_backtest.py exists.", exc_info=True)
+    # Define a minimal fallback strategy if import fails
+    class MinimalFallbackStrategy(bt.Strategy):
+        def log(self, txt, dt=None):
+            dt = dt or self.datas[0].datetime.date(0)
+            logger.info(f'[MinimalStrat] {dt.isoformat()}, {txt}')
+        def __init__(self):
+            self.dataclose = self.datas[0].close
+            self.log('Minimal Fallback Strategy Initialized.')
+        def next(self):
+            if len(self.dataclose) > 0:
+                self.log(f'Close, {self.dataclose[0]:.2f}')
     else:
-        for i, handler in enumerate(handlers):
-            print(f"  Handler {i}: {type(handler).__name__}, Level: {logging.getLevelName(handler.level)}")
-            if isinstance(handler, logging.FileHandler):
-                print(f"    -> File: {handler.baseFilename}")
-    print("--------------------------------------------")
+                self.log('Waiting for data...')
+    strategy_to_run = MinimalFallbackStrategy
+    logger.warning("Using MinimalFallbackStrategy due to import error.")
 
-# --- Minimal Strategy for Debugging --- 
-# class MinimalStrategy(bt.Strategy):
-#     def log(self, txt, dt=None):
-#         dt = dt or self.datas[0].datetime.date(0)
-#         print(f'{dt.isoformat()}, {txt}')
-# 
-#     def __init__(self):
-#         self.dataclose = self.datas[0].close
-#         print("MinimalStrategy Initialized")
-# 
-#     def next(self):
-#         self.log(f'Close, {self.dataclose[0]:.2f}')
-# --- End Minimal Strategy ---
 
-# --- Debugging Settings Import ---
-# print(f"DEBUG: Type of settings object: {type(settings)}")
-# print(f"DEBUG: Attributes of settings object: {dir(settings)}")
-# --- End Debugging ---
+# --- Main Execution Block ---
+if __name__ == "__main__":
+    logger.info("=== Backtest Runner Script Started ===")
 
-def run_backtest(symbol: str,
-                 from_date: str,
-                 to_date: str,
-                 interval: str = '1h',
-                 initial_cash: float = 10000.0,
-                 commission: float = 0.001, # Example commission (0.1%)
-                 stake: int = 10, # Example fixed stake per trade
-                 data_source: str = 'yahoo', # 'yahoo', 'db', 'csv', etc.
-                 csv_path: Optional[str] = None,
-                 plot: bool = True,
-                 optimize: bool = False,
-                 printlog: bool = False,
-                 **kwargs):
-    """
-    Runs a backtrader backtest or optimization for the given symbol and period.
+    # --- Cerebro Engine Setup ---
+    cerebro = bt.Cerebro()
+    logger.info("Backtrader Cerebro engine initialized.")
 
-    Args:
-        symbol (str): The trading symbol (e.g., 'BTC-USD' for Yahoo).
-        from_date (str): Start date in 'YYYY-MM-DD' format.
-        to_date (str): End date in 'YYYY-MM-DD' format.
-        interval (str): Data interval (e.g., '1h', '1d'). Needs compatibility with data source.
-        initial_cash (float): Starting cash for the backtest.
-        commission (float): Commission per trade (e.g., 0.001 for 0.1%).
-        stake (int): Default size for orders.
-        data_source (str): Where to get the data from ('yahoo', 'csv', 'db').
-        csv_path (Optional[str]): Path to the CSV file if data_source is 'csv'.
-        plot (bool): Whether to generate a plot (ignored during optimization).
-        optimize (bool): Whether to run parameter optimization instead of a single backtest.
-        printlog (bool): Whether to enable detailed strategy logging.
-        **kwargs: Additional keyword arguments for strategy parameters.
-    """
-    # --- Use the application logger ---
-    logger.info(f"Starting backtest for {symbol} from {from_date} to {to_date}")
-
-    # --- Prepare Strategy Parameters from Settings ---
-    strategy_params_from_settings = {
+    # --- Strategy Configuration ---
+    # Consolidate parameters for the strategy
+    strategy_params = {
+        # Match the parameter names defined in ChallengeStrategyBacktest.params
         'sma_long_period': settings.CHALLENGE_SMA_PERIOD,
-        'sma_short_period': 7, # Assuming 7 is fixed or add CHALLENGE_SMA_SHORT_PERIOD to settings
+        'sma_short_period': getattr(settings, 'CHALLENGE_SMA_SHORT_PERIOD', 7), # Add short period if needed
         'rsi_period': settings.CHALLENGE_RSI_PERIOD,
-        'rsi_threshold': settings.CHALLENGE_RSI_THRESHOLD,
+        'rsi_oversold': settings.CHALLENGE_RSI_THRESHOLD, # Use rsi_oversold (matching class param)
+        'rsi_overbought': getattr(settings, 'CHALLENGE_RSI_OVERBOUGHT', 70), # Add overbought level
         'volume_avg_period': settings.CHALLENGE_VOLUME_AVG_PERIOD,
         'volume_surge_ratio': settings.CHALLENGE_VOLUME_SURGE_RATIO,
         'divergence_lookback': settings.CHALLENGE_DIVERGENCE_LOOKBACK,
         'breakout_lookback': settings.CHALLENGE_BREAKOUT_LOOKBACK,
         'pullback_lookback': settings.CHALLENGE_PULLBACK_LOOKBACK,
-        'poc_lookback': settings.CHALLENGE_POC_LOOKBACK,
-        'poc_threshold': settings.CHALLENGE_POC_THRESHOLD,
+        # 'poc_lookback': settings.CHALLENGE_POC_LOOKBACK, # POC not used internally yet
+        # 'poc_threshold': settings.CHALLENGE_POC_THRESHOLD,
         'sl_ratio': settings.CHALLENGE_SL_RATIO,
         'tp_ratio': settings.CHALLENGE_TP_RATIO,
-        'printlog': printlog,
         'pullback_threshold': settings.CHALLENGE_PULLBACK_THRESHOLD,
+        'printlog': True, # Enable strategy logging via _write_log
     }
-    # --- Use the application logger ---
-    logger.info(f"Prepared base strategy params: {strategy_params_from_settings}")
-    # --- End Prepare Strategy Parameters ---
-
-    cerebro = bt.Cerebro()
-
-    # --- Setup Logging AFTER Cerebro initialization --- 
-    setup_logging() # <<< MOVED HERE
-    logger.info("Logging setup called after Cerebro initialization.")
-    # --- End Setup Logging ---
-
-    # --- Add Strategy or OptStrategy ---
-    if optimize:
-        # --- Use the application logger ---
-        logger.info("Setting up strategy optimization...")
-        # Define optimization ranges
-        opt_params = {
-            'divergence_lookback': [10, 14, 20],
-            'breakout_lookback': [20, 30, 40],
-            'poc_threshold': [0.6, 0.7, 0.8]
-        }
-        # *** 수정: 기본 파라미터에서 최적화 대상 키 제거 ***
-        base_params_for_opt = strategy_params_from_settings.copy()
-        for key_to_opt in opt_params.keys():
-            if key_to_opt in base_params_for_opt:
-                del base_params_for_opt[key_to_opt]
-        # ***********************************************
-
-        # Add strategy for optimization
-        cerebro.optstrategy(
-            ChallengeStrategyBacktest,
-            **base_params_for_opt, # 최적화 키가 제거된 기본 파라미터
-            **opt_params # Add optimization ranges
-        )
-        # --- Use the application logger ---
-        logger.info(f"Optimization parameters: {opt_params}")
-    else:
-        # --- Use the application logger ---
-        logger.info("Setting up single strategy run...")
-        single_run_params = strategy_params_from_settings.copy()
-        single_run_params.update(kwargs) # 단일 실행 시 kwargs로 받은 값으로 덮어쓰기
-        # --- Use the application logger ---
-        logger.info(f"Single run parameters: {single_run_params}")
-        cerebro.addstrategy(ChallengeStrategyBacktest, **single_run_params)
-
-    # --- Add Data Feed ---
-    data = None
-    fromdate = datetime.strptime(from_date, '%Y-%m-%d')
-    todate = datetime.strptime(to_date, '%Y-%m-%d')
-
+    logger.info(f"Adding strategy '{strategy_to_run.__name__}' with params: {strategy_params}")
     try:
-        if data_source.lower() == 'yahoo':
-            # --- Use the application logger ---
-            logger.info(f"Fetching data for {symbol} from yfinance ({interval})...")
-            # Use yfinance directly
-            df = yf.download(symbol, start=from_date, end=todate, interval=interval)
-            
-            if df.empty:
-                # --- Use the application logger ---
-                logger.error(f"No data fetched from yfinance for {symbol} in the specified period.")
-                return None
-
-            # --- Flatten MultiIndex Columns if they exist ---
-            if isinstance(df.columns, pd.MultiIndex):
-                # Keep only the first level (e.g., 'Open', 'High') and drop the ticker level
-                df.columns = df.columns.droplevel(1)
-                # --- Use the application logger ---
-                logger.info("Flattened MultiIndex columns.")
-
-            # --- Ensure required columns and correct naming for backtrader --- 
-            # Make column names lower case to match rename keys and PandasData mapping
-            df.columns = df.columns.str.lower()
-            df.rename(columns={
-                # 'Open': 'open', # Already lowercase now
-                # 'High': 'high',
-                # 'Low': 'low',
-                # 'Close': 'close',
-                'adj close': 'adj_close', # Rename specifically if needed
-                # 'Volume': 'volume'
-            }, inplace=True)
-            
-            # Make sure standard OHLCV columns exist AFTER potential flattening/lowercasing
-            required_cols = ['open', 'high', 'low', 'close', 'volume']
-            if not all(col in df.columns for col in required_cols):
-                # --- Use the application logger ---
-                logger.error(f"Fetched data is missing required columns: {required_cols}. Columns found: {df.columns}")
-                return None
-                
-            # Use adj_close as close if preferred and available
-            # if 'adj_close' in df.columns:
-            #     df['close'] = df['adj_close']
-
-            # Reset the name of the columns index if it exists
-            if df.columns.name:
-                 # --- Use the application logger ---
-                 logger.debug(f"DEBUG: Resetting columns name from '{df.columns.name}' to None.")
-                 df.columns.name = None
-
-            # --- Explicitly print columns before PandasData ---
-            # Ensure logging level is set to DEBUG to see these messages
-            # --- Use the application logger ---
-            logger.debug(f"DEBUG: Columns before PandasData: {df.columns}")
-            logger.debug(f"DEBUG: DataFrame index type: {type(df.index)}")
-            logger.debug(f"DEBUG: DataFrame head right before PandasData:\n{df.head()}")
-            # --- End Explicit Debug ---
-
-            # --- Explicitly print DataFrame info before feeding to backtrader ---
-            # --- Use the application logger ---
-            logger.debug(f"DEBUG: DataFrame info before PandasData:\n{df.info()}")
-            logger.debug(f"DEBUG: DataFrame head before PandasData:\n{df.head()}")
-            # <<< ADDED: Detailed DataFrame Check >>>
-            logger.debug("--- Detailed DataFrame Check Before PandasData ---")
-            logger.debug(f"Index Type: {type(df.index)}")
-            logger.debug(f"Index is DatetimeIndex: {isinstance(df.index, pd.DatetimeIndex)}")
-            logger.debug(f"Index Name: {df.index.name}")
-            logger.debug(f"Column Names: {df.columns.tolist()}")
-            logger.debug(f"Column Data Types:\n{df.dtypes}")
-            # Check for NaNs
-            nan_check = df[required_cols].isnull().sum()
-            logger.debug(f"NaN count per required column:\n{nan_check}")
-            if nan_check.sum() > 0:
-                logger.warning("NaN values detected in required columns before creating PandasData feed!")
-            logger.debug("--------------------------------------------------")
-            # <<< END ADDED >>>
-
-            # data = bt.feeds.PandasData(dataname=df) # Original call
-            # Create PandasData feed with explicit column mapping
-            data = bt.feeds.PandasData(
-                dataname=df,
-                datetime=None,  # Use the DataFrame index as datetime
-                open='open',
-                high='high',
-                low='low',
-                close='close',
-                volume='volume',
-                openinterest=-1 # Explicitly tell backtrader there is no open interest column
-            )
-            # print(f"DEBUG: PandasData object created from yfinance fetch: {data}") # Remove debug print
-
-        elif data_source.lower() == 'csv':
-            if csv_path and os.path.exists(csv_path):
-                # --- Use the application logger ---
-                logger.info(f"Loading data for {symbol} from CSV: {csv_path}")
-                # Load dataframe first to check/rename columns
-                temp_df = pd.read_csv(csv_path)
-                # --- Check/Rename CSV columns --- 
-                # Assuming CSV has columns like Date, Open, High, Low, Close, Volume
-                # Adjust based on actual CSV format
-                temp_df.rename(columns={
-                    'Date': 'datetime', # Example, adjust as needed
-                    'Open': 'open',
-                    'High': 'high',
-                    'Low': 'low',
-                    'Close': 'close',
-                    'Volume': 'volume'
-                }, inplace=True)
-                
-                # Convert datetime column if it's not the index
-                if 'datetime' in temp_df.columns:
-                   try:
-                       temp_df['datetime'] = pd.to_datetime(temp_df['datetime'])
-                       temp_df.set_index('datetime', inplace=True)
-                   except Exception as e:
-                       # --- Use the application logger ---
-                       logger.error(f"Error processing datetime column in CSV: {e}")
-                       return None
-                else: # Assume index is datetime
-                    try:
-                       temp_df.index = pd.to_datetime(temp_df.index)
-                    except Exception as e:
-                       # --- Use the application logger ---
-                       logger.error(f"Error processing datetime index in CSV: {e}")
-                       return None
-
-                # Filter date range AFTER loading
-                temp_df = temp_df[(temp_df.index >= fromdate) & (temp_df.index <= todate)]
-
-                required_cols_csv = ['open', 'high', 'low', 'close', 'volume']
-                if not all(col in temp_df.columns for col in required_cols_csv):
-                    # --- Use the application logger ---
-                    logger.error(f"CSV data is missing required columns: {required_cols_csv}. Columns found: {temp_df.columns}")
-                    return None
-                    
-                if temp_df.empty:
-                    # --- Use the application logger ---
-                    logger.error(f"No data found in CSV for the specified date range.")
-                    return None
-                    
-                # data = bt.feeds.PandasData(dataname=temp_df) # Original CSV call
-                data = bt.feeds.PandasData(
-                    dataname=temp_df,
-                    datetime=None,
-                    open='open',
-                    high='high',
-                    low='low',
-                    close='close',
-                    volume='volume',
-                    openinterest=-1
-                )
-                # print(f"DEBUG: PandasData object created from CSV: {data}") # Remove debug print
-            else:
-                # --- Use the application logger ---
-                logger.error(f"CSV path not provided or file does not exist: {csv_path}")
-                return None
-        elif data_source.lower() == 'db':
-            # --- Use the application logger ---
-            logger.info(f"Fetching data for {symbol} from database...")
-            df_db = get_historical_data(symbol, interval, start_date=from_date, end_date=to_date)
-            if df_db is not None and not df_db.empty:
-                # --- Ensure correct columns from DB --- 
-                df_db.rename(columns={
-                    'Open': 'open',
-                    'High': 'high',
-                    'Low': 'low',
-                    'Close': 'close',
-                    'Volume': 'volume'
-                }, inplace=True)
-                # Ensure index is datetime
-                try:
-                    df_db.index = pd.to_datetime(df_db.index)
-                except Exception as e:
-                    # --- Use the application logger ---
-                    logger.error(f"Error processing index as datetime from DB: {e}")
-                    return None
-                      
-                required_cols_db = ['open', 'high', 'low', 'close', 'volume']
-                if not all(col in df_db.columns for col in required_cols_db):
-                    # --- Use the application logger ---
-                    logger.error(f"DB data is missing required columns: {required_cols_db}. Columns found: {df_db.columns}")
-                    return None
-                       
-                # data = bt.feeds.PandasData(dataname=df_db) # Original DB call
-                data = bt.feeds.PandasData(
-                    dataname=df_db,
-                    datetime=None,
-                    open='open',
-                    high='high',
-                    low='low',
-                    close='close',
-                    volume='volume',
-                    openinterest=None
-                )
-                # print(f"DEBUG: PandasData object created from DB: {data}") # Remove debug print
-            else:
-                # --- Use the application logger ---
-                logger.error(f"Failed to fetch data from database/internal function for {symbol}.")
-                return None
-        else:
-            # --- Use the application logger ---
-            logger.error(f"Unsupported data source: {data_source}")
-            return None
-
-        # Replace 'if data:' with explicit None check
-        if data is not None:
-            # --- Use the application logger ---
-            logger.debug(f"DEBUG: Data object created ({type(data)}), adding to cerebro.")
-            cerebro.adddata(data)
-            # --- Use the application logger ---
-            logger.info("Data feed added to Cerebro.")
-        else:
-             # Log error before potentially returning
-             # --- Use the application logger ---
-             logger.error("Failed to load data feed (data object is None).")
-             return None # Return None if data object is None after creation attempt
-
+        cerebro.addstrategy(strategy_to_run, **strategy_params)
     except Exception as e:
-        # --- Use the application logger ---
-        logger.error(f"Error loading data feed: {e}", exc_info=True)
-        return None
+        logger.error(f"Failed to add strategy to Cerebro: {e}", exc_info=True)
+        sys.exit(1)
 
-    # --- Configure Cerebro ---
+    # --- Data Loading Configuration ---
+    ticker = getattr(settings, 'BACKTEST_TICKER', 'BTC-USD')
+    # Use period OR specific dates based on settings availability
+    if hasattr(settings, 'BACKTEST_FROM_DATE') and hasattr(settings, 'BACKTEST_TO_DATE'):
+        from_date_str = settings.BACKTEST_FROM_DATE
+        to_date_str = settings.BACKTEST_TO_DATE
+        period = None # Explicitly set period to None if using dates
+        logger.info(f"Using specific date range: {from_date_str} to {to_date_str}")
+    else:
+        period = getattr(settings, 'BACKTEST_PERIOD', '365d')
+        from_date_str = None
+        to_date_str = None
+        logger.info(f"Using period: {period}")
+
+    interval = getattr(settings, 'BACKTEST_INTERVAL', '1h')
+    data_source = getattr(settings, 'DATA_SOURCE', 'yahoo')
+    csv_path = getattr(settings, 'CSV_DATA_PATH', None)
+
+    logger.info(f"Data config: Ticker={ticker}, Interval={interval}, Source={data_source}")
+
+    # --- Data Loading and Preparation ---
+    df_data = None
+    try:
+        logger.info(f"Attempting to load data from source: {data_source}")
+        if data_source.lower() == 'yahoo':
+            # Determine start/end for yfinance download
+            start_dt = from_date_str
+            end_dt = to_date_str
+            if period and not start_dt: # Use period if dates are not set
+                # yfinance doesn't directly use period like '365d' with interval < 1d well, calculate dates
+                from datetime import date, timedelta
+                end_dt_obj = date.today()
+                start_dt_obj = end_dt_obj - timedelta(days=int(period[:-1])) # Simple calculation
+                start_dt = start_dt_obj.strftime('%Y-%m-%d')
+                end_dt = end_dt_obj.strftime('%Y-%m-%d') # Use today as end date
+                logger.info(f"Calculated date range for period '{period}': {start_dt} to {end_dt}")
+
+            logger.info(f"Fetching from yfinance: Ticker={ticker}, Start={start_dt}, End={end_dt}, Interval={interval}")
+            df_data = yf.download(ticker, start=start_dt, end=end_dt, interval=interval, progress=False)
+            if df_data.empty:
+                raise ValueError(f"yfinance returned no data for {ticker} in the specified range/interval.")
+
+            # --- Handle Potential MultiIndex Columns from yfinance --- 
+            if isinstance(df_data.columns, pd.MultiIndex):
+                logger.info("Detected MultiIndex columns, flattening by dropping ticker level.")
+                # Assumes the structure is (Metric, Ticker), e.g., ('Close', 'BTC-USD')
+                # We want to keep only the metric part ('Close')
+                df_data.columns = df_data.columns.get_level_values(0)
+                logger.debug(f"Columns after flattening MultiIndex: {df_data.columns.tolist()}")
+            # --- End MultiIndex Handling ---
+
+        elif data_source.lower() == 'csv' and csv_path and os.path.exists(csv_path):
+            logger.info(f"Loading from CSV: {csv_path}")
+            df_data = pd.read_csv(csv_path)
+            # --- Basic CSV Processing ---
+            # Find a potential date/time column and set as index
+            potential_dt_cols = [col for col in df_data.columns if 'date' in col.lower() or 'time' in col.lower()]
+            if potential_dt_cols:
+                try:
+                    dt_col = potential_dt_cols[0] # Use the first likely column
+                    logger.info(f"Attempting to use CSV column '{dt_col}' as datetime index.")
+                    df_data[dt_col] = pd.to_datetime(df_data[dt_col])
+                    df_data.set_index(dt_col, inplace=True)
+                    logger.info(f"CSV index set to '{dt_col}'.")
+                   except Exception as e:
+                    logger.error(f"Failed to process datetime column '{potential_dt_cols[0]}' in CSV: {e}. Attempting to use index.", exc_info=True)
+                    # Fallback: try converting the existing index
+                    try:
+                        df_data.index = pd.to_datetime(df_data.index)
+                        logger.info("Successfully converted existing CSV index to datetime.")
+                    except Exception as e_idx:
+                       logger.error(f"Failed to convert CSV index to datetime: {e_idx}", exc_info=True)
+                       raise ValueError("Could not establish a datetime index for CSV data.")
+            else:
+                 # If no obvious date column, try converting the index directly
+                 try:
+                     df_data.index = pd.to_datetime(df_data.index)
+                     logger.info("Successfully converted existing CSV index to datetime (no date column found).")
+                 except Exception as e_idx:
+                    logger.error(f"Failed to convert CSV index to datetime: {e_idx}", exc_info=True)
+                    raise ValueError("Could not establish a datetime index for CSV data (no date column found).")
+
+            # Filter by date range if specified
+            if from_date_str and to_date_str:
+                fromdate = datetime.strptime(from_date_str, '%Y-%m-%d')
+                todate = datetime.strptime(to_date_str, '%Y-%m-%d')
+                df_data = df_data[(df_data.index >= fromdate) & (df_data.index <= todate)]
+                logger.info(f"Filtered CSV data to range: {from_date_str} to {to_date_str}")
+
+        elif data_source.lower() == 'db':
+            logger.info(f"Fetching from database via get_historical_data: Symbol={ticker}, Interval={interval}, Start={from_date_str}, End={to_date_str}")
+            df_data = get_historical_data(ticker, interval, start_date=from_date_str, end_date=to_date_str) # Pass dates if available
+            if df_data is None or df_data.empty:
+                 raise ValueError("get_historical_data returned no data from the database.")
+
+        else:
+            raise ValueError(f"Unsupported or misconfigured data source: {data_source}")
+
+        # --- Universal Data Cleaning and Validation ---
+        if df_data is None or df_data.empty:
+            raise ValueError(f"No data loaded from source '{data_source}'.")
+
+        # 1. Standardize Column Names (lowercase, underscore spaces)
+        df_data.columns = [str(col).lower().replace(' ', '_') for col in df_data.columns]
+        logger.debug(f"Columns after standardization: {df_data.columns.tolist()}")
+
+        # 2. Rename 'adj_close' to 'close' if it exists and 'close' doesn't, or prefer adj_close
+        if 'adj_close' in df_data.columns:
+            df_data['close'] = df_data['adj_close']
+            logger.info("Using 'adj_close' as 'close'.")
+
+        # 3. Verify Required Columns
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_cols if col not in df_data.columns]
+        if missing_cols:
+            raise ValueError(f"Data is missing required OHLCV columns after cleaning: {missing_cols}. Found: {df_data.columns.tolist()}")
+
+        # 4. Ensure DatetimeIndex
+        if not isinstance(df_data.index, pd.DatetimeIndex):
+            logger.warning(f"Data index is not DatetimeIndex (Type: {type(df_data.index)}). Attempting conversion.")
+                try:
+                df_data.index = pd.to_datetime(df_data.index)
+                logger.info("Successfully converted index to DatetimeIndex.")
+                except Exception as e:
+                logger.error(f"Failed to convert data index to DatetimeIndex: {e}", exc_info=True)
+                raise ValueError("Invalid data index type, cannot convert to DatetimeIndex.")
+
+        # 5. Remove Rows with NaNs in essential columns
+        initial_rows = len(df_data)
+        df_data.dropna(subset=required_cols, inplace=True)
+        rows_removed = initial_rows - len(df_data)
+        if rows_removed > 0:
+            logger.warning(f"Removed {rows_removed} rows with NaN values in OHLCV columns.")
+
+        # 6. Final Check for Empty DataFrame
+        if df_data.empty:
+            raise ValueError("DataFrame became empty after cleaning (NaN removal or initial load failure).")
+
+        logger.info(f"Data successfully loaded and prepared. Shape: {df_data.shape}, Index Range: {df_data.index.min()} to {df_data.index.max()}")
+        logger.debug(f"Cleaned DataFrame head: {df_data.head()}")
+
+        # --- Create Backtrader Data Feed ---
+        # Use explicit column mapping for robustness
+        data_feed = bt.feeds.PandasData(
+            dataname=df_data,
+            datetime=None,  # Use the DataFrame's DatetimeIndex
+                    open='open',
+                    high='high',
+                    low='low',
+                    close='close',
+                    volume='volume',
+            openinterest=-1 # Indicate no open interest data is used
+        )
+        cerebro.adddata(data_feed)
+        logger.info("Data feed successfully added to Cerebro.")
+
+    except FileNotFoundError as fnf_error:
+        logger.error(f"Data loading error: CSV file not found at path '{csv_path}'. {fnf_error}", exc_info=True)
+        sys.exit(1)
+    except ValueError as val_error:
+        logger.error(f"Data loading/preparation error: {val_error}", exc_info=True)
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during data loading: {e}", exc_info=True)
+        sys.exit(1)
+
+    # --- Broker Configuration ---
+    initial_cash = float(getattr(settings, 'BACKTEST_INITIAL_CASH', 10000.0))
+    commission = float(getattr(settings, 'BACKTEST_COMMISSION', 0.001))
+    stake = int(getattr(settings, 'BACKTEST_STAKE', 1))
+
     cerebro.broker.setcash(initial_cash)
-    # Set commission
     cerebro.broker.setcommission(commission=commission)
-    # Add stake size
     cerebro.addsizer(bt.sizers.FixedSize, stake=stake)
-    # --- Use the application logger ---
-    logger.info(f"Cerebro configured: Initial Cash=${initial_cash:,.2f}, Commission={commission*100:.3f}%, Stake={stake}")
+    logger.info(f"Broker configured: Initial Cash=${initial_cash:,.2f}, Commission={commission*100:.3f}%, Stake={stake}")
 
-    # --- Add Analyzers --- 
-    # Add TradeAnalyzer regardless of mode to get trade counts in optimization
+    # --- Analyzers ---
+    # Add standard analyzers for single runs
+    logger.info("Adding standard analyzers: TradeAnalyzer, SharpeRatio, DrawDown, Returns")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trade_analyzer')
-    # Add Returns analyzer to calculate final value from total return
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe_ratio', timeframe=bt.TimeFrame.Days, riskfreerate=0.0) # Added riskfreerate
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
     cerebro.addanalyzer(bt.analyzers.Returns, _name='returns', timeframe=bt.TimeFrame.Days)
 
-    if not optimize: # Add other analyzers only for single runs
-        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe_ratio', timeframe=bt.TimeFrame.Days)
-        # cerebro.addanalyzer(bt.analyzers.Returns, _name='returns', timeframe=bt.TimeFrame.Days) # Already added above
-        cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
-
-    # --- Run Backtest/Optimization ---
-    run_results = None # <<< Initialize outside try
-    strategy_outputs = None # <<< Initialize outside try
+    # --- Run Backtest ---
+    logger.info("Starting Cerebro backtest run...")
+    run_results = None
     try:
-        print_logger_handlers("Before cerebro.run()") # Debug: Print handlers before running
-        # --- Use the application logger ---
-        logger.info("Running Cerebro...")
-        if optimize:
-            strategy_outputs = cerebro.run(maxcpus=1) # Use maxcpus=1 for simpler debugging if needed
-        else:
+        # Run the backtest. It returns a list of strategy instances.
             run_results = cerebro.run()
-        # --- Use the application logger ---
         logger.info("Cerebro run completed.")
-
-    finally:
-        # --- Ensure logging is potentially restored even if run fails ---
-        print_logger_handlers("After try/finally (Before Re-Setup)") # Debug: Print handlers
-        # Call setup_logging again, forcing reset if handlers might have been removed
-        setup_logging(force_reset=True) # <<< Force reset
-        logger.info("Logging setup potentially re-applied after Cerebro run.")
-        print_logger_handlers("After Re-Setup") # Debug: Print handlers after reset attempt
-
-    # --- Process Results --- 
-    if optimize:
-        # --- Use the application logger ---
-        logger.info("Processing optimization results...")
-        # Print Optimization Results
-        # ... (Optimization result processing logic needed) ...
-        print("Optimization results:", strategy_outputs) # Placeholder
-        # Return optimization results directly
-        return strategy_outputs
-    elif run_results and isinstance(run_results, list) and len(run_results) > 0 and isinstance(run_results[0], bt.Strategy):
-        # --- Added check for valid run_results list containing strategy instance ---
-        # --- Use the application logger ---
-        logger.info("Processing single run results...")
-        # --- Get Final Portfolio Value --- 
+    except Exception as e:
+        logger.error(f"Exception occurred during cerebro.run(): {e}", exc_info=True)
+        # Optionally try to get broker value even if run fails partially
         try:
-            final_value = cerebro.broker.getvalue()
-            initial_value = cerebro.broker.startingcash
-            pnl = final_value - initial_value
-            pnl_percent = (pnl / initial_value) * 100
-            print('\n--- Backtest Results ---')
-            print(f'Starting Portfolio Value: {initial_value:,.2f}')
-            print(f'Final Portfolio Value:    {final_value:,.2f}')
-            print(f'Net Profit/Loss:        {pnl:,.2f}')
-            print(f'Net Profit/Loss (%):    {pnl_percent:.2f}%')
-            print('------------------------')
-        except Exception as e:
-            logger.error(f"Error calculating final portfolio value: {e}", exc_info=True)
-        # --- End Final Portfolio Value --- 
+            final_val = cerebro.broker.getvalue()
+            logger.info(f"Broker value after exception: {final_val:,.2f}")
+        except Exception as be:
+            logger.error(f"Could not get broker value after exception: {be}")
+        sys.exit(1)
 
-        # --- Plotting --- 
-        if plot and not optimize:
-            # --- Use the application logger ---
-            logger.info("Generating plot...")
+    # --- Process and Print Results ---
+    if run_results and isinstance(run_results, list) and len(run_results) > 0:
+        # Safely access the first strategy instance
+        try:
+            strategy_instance = run_results[0]
+            logger.info("Processing analysis results from the strategy instance...")
+
+            # --- Basic Portfolio Stats ---
+            final_portfolio_value = cerebro.broker.getvalue()
+            net_profit = final_portfolio_value - initial_cash
+            net_profit_percent = (net_profit / initial_cash) * 100 if initial_cash else 0
+
+            print("--- Backtest Summary ---")
+            print(f"Initial Portfolio Value: {initial_cash:,.2f}")
+            print(f"Final Portfolio Value:   {final_portfolio_value:,.2f}")
+            print(f"Net Profit/Loss:         {net_profit:,.2f}")
+            print(f"Net Profit/Loss [%]:     {net_profit_percent:.2f}%")
+
+            # --- Analyzer Results ---
+            print("--- Analyzer Results ---")
+            analyzers = strategy_instance.analyzers
             try:
-                # Increase figure size for better readability
-                # Ensure plot is only called if cerebro ran successfully
-                cerebro.plot(style='candlestick', barup='green', bardown='red', iplot=True, volume=True, figscale=1.5)
-            except AttributeError as ae:
-                logger.error(f"Plotting failed due to AttributeError (check if backtest ran correctly): {ae}", exc_info=True)
+                trade_analysis = analyzers.trade_analyzer.get_analysis()
+                total_closed = trade_analysis.get('total', {}).get('closed', 0)
+                total_won = trade_analysis.get('won', {}).get('total', 0)
+                total_lost = trade_analysis.get('lost', {}).get('total', 0)
+                win_rate = (total_won / total_closed * 100) if total_closed > 0 else 0.0
+                avg_win_pnl = trade_analysis.get('won', {}).get('pnl', {}).get('average', 0.0)
+                avg_loss_pnl = trade_analysis.get('lost', {}).get('pnl', {}).get('average', 0.0)
+                print(f"Total Closed Trades: {total_closed}")
+                print(f"Winning Trades:      {total_won}")
+                print(f"Losing Trades:       {total_lost}")
+                print(f"Win Rate [%]:        {win_rate:.2f}%")
+                print(f"Avg Winning Trade PnL: {avg_win_pnl:,.2f}")
+                print(f"Avg Losing Trade PnL:  {avg_loss_pnl:,.2f}")
+            except AttributeError:
+                logger.warning("Could not retrieve TradeAnalyzer results. Was it added?")
+        except Exception as e:
+                logger.error(f"Error processing TradeAnalyzer results: {e}", exc_info=True)
+
+            try:
+                sharpe_analysis = analyzers.sharpe_ratio.get_analysis()
+                sharpe_ratio = sharpe_analysis.get('sharperatio', 'N/A')
+                # Handle case where Sharpe ratio is None (e.g., no trades or zero variance)
+                print(f"Sharpe Ratio (Annualized): {sharpe_ratio if sharpe_ratio is not None else 'N/A'}")
+            except AttributeError:
+                 logger.warning("Could not retrieve SharpeRatio results. Was it added?")
             except Exception as e:
-                logger.error(f"Error during plotting: {e}", exc_info=True)
-        # --- End Plotting ---
+                logger.error(f"Error processing SharpeRatio results: {e}", exc_info=True)
 
-        # Return the first strategy instance's results (if any)
-        return run_results[0]
-    else:
-        # --- Use the application logger ---
-        logger.error(f"Backtest run did not produce valid results or strategy instance. run_results: {run_results}")
-        return None
+            try:
+                drawdown_analysis = analyzers.drawdown.get_analysis()
+                max_drawdown = drawdown_analysis.max.get('drawdown', 0.0)
+                max_drawdown_len = drawdown_analysis.max.get('len', 0)
+                print(f"Max Drawdown [%]:    {max_drawdown:.2f}%")
+                print(f"Max Drawdown Length: {max_drawdown_len} bars")
+            except AttributeError:
+                 logger.warning("Could not retrieve DrawDown results. Was it added?")
+            except Exception as e:
+                logger.error(f"Error processing DrawDown results: {e}", exc_info=True)
 
-# --- Main Execution Block --- 
-if __name__ == "__main__":
-    # --- Setup Logging at the very start of the main block ---
-    # Ensure logs capture setup issues if run_backtest isn't called
-    setup_logging()
-    logger = logging.getLogger(APP_LOGGER_NAME) # Re-get logger after setup
-    logger.info("=== Backtest Runner Script Started ===")
-    # --- End Setup Logging ---
-
-    # --- Example Usage ---
-    symbol = 'BTC-USD'
-    start_date = '2023-10-01' # <<< 변경: 데이터 조회 가능 기간으로 수정
-    end_date = '2023-12-30' # Use a recent date for testing
-    # interval = '1d' # Changed to daily for faster testing
-    # interval = '1h' # Switch back to hourly if needed
-    # interval = settings.CHALLENGE_INTERVAL # Use interval from settings
-    
-    # Determine interval based on settings or default
-    try:
-        interval_setting = settings.CHALLENGE_INTERVAL
-        logger.info(f"Using interval from settings: {interval_setting}")
+            try:
+                returns_analysis = analyzers.returns.get_analysis()
+                total_return = returns_analysis.get('rtot', 0.0) * 100 # Already calculated above, but good cross-check
+                # avg_return = returns_analysis.get('ravg', 0.0) * 100
+                print(f"Total Return [%] (Analyzer): {total_return:.2f}%")
+                # print(f"Average Daily Return [%]: {avg_return:.4f}%") # Can be noisy
     except AttributeError:
-        interval_setting = '1h' # Default if not in settings
-        logger.warning(f"CHALLENGE_INTERVAL not found in settings, defaulting to '{interval_setting}'")
-    interval = interval_setting
+                 logger.warning("Could not retrieve Returns results. Was it added?")
+            except Exception as e:
+                logger.error(f"Error processing Returns results: {e}", exc_info=True)
 
-    data_source = 'yahoo' # or 'csv', 'db'
+            print("-" * 25)
 
-    # --- Use the application logger ---
-    logger.info(f"Running backtest for: {symbol}")
-    logger.info(f"Period: {start_date} to {end_date}")
-    logger.info(f"Interval: {interval}")
-    logger.info(f"Data Source: {data_source}")
+        except AttributeError as ae:
+            logger.error(f"Error accessing strategy instance or analyzers (AttributeError): {ae}. Backtest might have failed internally.", exc_info=True)
+        except IndexError as ie:
+             logger.error(f"Error accessing run_results list (IndexError): {ie}. Cerebro might not have returned strategy instances.", exc_info=True)
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during results processing: {e}", exc_info=True)
 
-    # --- Run Backtest --- 
-    results = run_backtest(
-        symbol=symbol,
-        from_date=start_date,
-        to_date=end_date,
-        interval=interval,
-        initial_cash=10000.0,
-        commission=0.001,
-        stake=1, # Example stake size for BTC
-        data_source=data_source,
-        # csv_path='path/to/your/data.csv', # Uncomment if using CSV
-        plot=True, # Enable plotting for single runs
-        optimize=False, # Set to True to run optimization
-        printlog=True # Enable detailed strategy logging (redundant with file logging?)
-        # --- Pass additional strategy params via kwargs if needed ---
-        # Example: Override specific parameters for this run
-        # poc_threshold=0.8 
-    )
-
-    # --- Check Results --- 
-    if results:
-        # If optimize=True, results will be list of lists from optstrategy
-        # If optimize=False, results might be the strategy instance (or None)
-        if isinstance(results, bt.Strategy):
-            logger.info("Backtest finished successfully. Strategy instance returned.")
-            # You can access analyzers here if added, e.g., results.analyzers.sharpe.get_analysis()
-        elif isinstance(results, list): # Check if it looks like optimization output
-            logger.info("Optimization finished successfully. Results list returned.")
-            # Process optimization results
-        else:
-            logger.warning(f"Backtest finished, but the returned result type is unexpected: {type(results)}")
     else:
-        logger.error("Backtest failed or produced no results.")
+        logger.error("Backtest did not produce valid results (run_results is None or empty). Cannot analyze or plot.")
+
+    # --- Plotting ---
+    plot_enabled = getattr(settings, 'BACKTEST_PLOT', True)
+    if run_results and plot_enabled:
+        logger.info("Attempting to generate plot...")
+        try:
+            # Ensure matplotlib backend is suitable (consider 'Agg' for non-GUI server environments)
+            # import matplotlib
+            # matplotlib.use('Agg')
+            import matplotlib.pyplot as plt # Import only if plotting
+
+            # Define plot directory relative to project root
+            plots_dir = os.path.join(PROJECT_ROOT, 'plots')
+            os.makedirs(plots_dir, exist_ok=True)
+            plot_filename = f'backtest_{ticker}_{interval}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+            plot_filepath = os.path.join(plots_dir, plot_filename)
+
+            # Plot using cerebro.plot()
+            # iplot=False prevents blocking in non-interactive environments
+            figure = cerebro.plot(style='candlestick', barup='green', bardown='red',
+                                  volup='#4CAF50', voldown='#F44336', iplot=False)[0][0]
+
+            figure.savefig(plot_filepath, dpi=300) # Save the figure
+            logger.info(f"Plot saved successfully to: {plot_filepath}")
+            # plt.show() # Generally avoid plt.show() in automated scripts
+
+        except ImportError:
+            logger.error("Plotting requires matplotlib. Please install it (`pip install matplotlib`).")
+        except IndexError:
+             logger.error("Plotting failed: Cerebro.plot() did not return the expected figure structure.", exc_info=True)
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during plotting: {e}", exc_info=True)
+
+    elif not plot_enabled:
+        logger.info("Plotting is disabled in settings (BACKTEST_PLOT=False).")
+    elif not run_results:
+         logger.warning("Skipping plotting because the backtest did not produce valid results.")
 
     logger.info("=== Backtest Runner Script Finished ===")

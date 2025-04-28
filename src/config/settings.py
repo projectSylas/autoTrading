@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     ENABLE_SENTIMENT_ANALYSIS: bool = Field(default=True, validation_alias='ENABLE_SENTIMENT_ANALYSIS')
     ENABLE_VOLATILITY_ALERT: bool = Field(default=False, validation_alias='ENABLE_VOLATILITY_ALERT')
     ENABLE_BACKTEST: bool = Field(default=False, validation_alias='ENABLE_BACKTEST')
+    ENABLE_VOLATILITY: bool = Field(default=True, validation_alias='ENABLE_VOLATILITY')
+    ENABLE_ANALYSIS_PIPELINE: bool = Field(default=True, validation_alias='ENABLE_ANALYSIS_PIPELINE')
+    ENABLE_ANOMALY_DETECTION: bool = Field(default=True, validation_alias='ENABLE_ANOMALY_DETECTION')
+    ANOMALY_THRESHOLD_PCT: float = Field(default=5.0, validation_alias='ANOMALY_THRESHOLD_PCT')
     VOLATILITY_THRESHOLD: float = Field(default=5.0, validation_alias='VOLATILITY_THRESHOLD')
     # Add other flags/settings as needed
 

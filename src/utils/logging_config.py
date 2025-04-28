@@ -31,14 +31,14 @@ def setup_logging(force_reset: bool = False):
     # --- 강제 리셋 또는 초기 설정 시 기존 핸들러 제거 --- 
     if force_reset:
         print(f"[{__name__}] Force reset: Removing existing handlers for '{APP_LOGGER_NAME}'.")
-        for handler in logger.handlers[:]:
+        for handler in logger.handlers[:]: 
             logger.removeHandler(handler)
             handler.close()
 
     # --- 로거 레벨 설정 (DEBUG 고정) --- 
     logger.setLevel(logging.DEBUG)
     logger.propagate = False # 루트 로거로 전파 방지 (중복 출력 방지)
-
+    
     # --- 포매터 생성 --- 
     log_format = '%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s'
     formatter = logging.Formatter(log_format)
@@ -52,7 +52,7 @@ def setup_logging(force_reset: bool = False):
     # --- 파일 핸들러 (app.log, DEBUG 레벨) --- 
     log_file_path = os.path.join(LOG_DIR, 'app.log')
     file_handler = RotatingFileHandler(
-        log_file_path,
+        log_file_path, 
         maxBytes=10*1024*1024, # 10 MB
         backupCount=5,
         encoding='utf-8'
@@ -72,7 +72,7 @@ def setup_logging(force_reset: bool = False):
     )
     error_file_handler.setFormatter(formatter)
     error_file_handler.setLevel(logging.ERROR)
-    logger.addHandler(error_file_handler)
+        logger.addHandler(error_file_handler)
 
     print(f"[{__name__}] Logging setup complete for '{APP_LOGGER_NAME}'. Level: DEBUG (Fixed), Handlers: {len(logger.handlers)}")
     return logger

@@ -7,13 +7,6 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 
-# config 모듈 로드 (NewsAPI 키)
-try:
-    import config
-except ImportError:
-    logging.error("config.py 파일을 찾을 수 없습니다.")
-    config = None
-
 # 설정 모듈 로드
 from src.config.settings import settings
 # DB 로깅 함수 임포트 시도
@@ -90,12 +83,12 @@ def fetch_recent_news(keyword: str, days_ago: int = 1, language: str = 'en', pag
         list[dict]: 뉴스 기사 리스트 (각 dict는 title, description, content 등 포함).
                    오류 발생 시 빈 리스트 반환.
     """
-    if not config or not config.NEWS_API_KEY:
-        logging.warning("NewsAPI 키가 설정되지 않아 뉴스를 가져올 수 없습니다.")
+    if not settings or not settings.NEWS_API_KEY:
+        logging.warning("NewsAPI 키가 settings에 설정되지 않아 뉴스를 가져올 수 없습니다.")
         return []
 
     try:
-        newsapi = NewsApiClient(api_key=config.NEWS_API_KEY)
+        newsapi = NewsApiClient(api_key=settings.NEWS_API_KEY)
         from_date = (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
 
         logging.info(f"'{keyword}' 관련 뉴스 검색 (from: {from_date}, lang: {language}, size: {page_size})...")

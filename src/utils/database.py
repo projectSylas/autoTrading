@@ -73,70 +73,10 @@ def get_db_cursor(commit=False):
 
 # --- Table Creation (Idempotent) --- #
 def initialize_database():
-    """Creates necessary tables if they don't exist."""
-    commands = (
-        """
-        CREATE TABLE IF NOT EXISTS trades (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            strategy VARCHAR(50) NOT NULL, -- 'core' or 'challenge'
-            symbol VARCHAR(50) NOT NULL,
-            side VARCHAR(10) NOT NULL, -- 'buy' or 'sell'
-            quantity NUMERIC,
-            amount_usd NUMERIC,
-            entry_price NUMERIC,
-            exit_price NUMERIC,
-            pnl_percent NUMERIC,
-            status VARCHAR(50), -- 'open', 'closed_tp', 'closed_sl', 'rebalance', 'APIError', etc.
-            order_id VARCHAR(100),
-            reason TEXT
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS sentiment_logs (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            keyword VARCHAR(100) NOT NULL,
-            sentiment VARCHAR(20), -- 'positive', 'negative', 'neutral'
-            score NUMERIC,
-            article_count INTEGER
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS volatility_logs (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            symbol VARCHAR(50) NOT NULL,
-            check_time TIMESTAMP WITH TIME ZONE,
-            is_anomaly BOOLEAN,
-            actual_price NUMERIC,
-            predicted_price NUMERIC,
-            deviation_percent NUMERIC
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS prediction_logs (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Log time
-            prediction_time TIMESTAMP WITH TIME ZONE NOT NULL, -- Timestamp the prediction is for
-            symbol VARCHAR(50) NOT NULL,
-            predicted_price NUMERIC NOT NULL,
-            model_type VARCHAR(50),
-            input_seq_len INTEGER,
-            actual_price NUMERIC, -- To be filled later for error calculation
-            error_percentage NUMERIC -- To be filled later
-        );
-        """
-    )
-    try:
-        with get_db_cursor(commit=True) as cursor:
-            for command in commands:
-                cursor.execute(command)
-        logging.info("Database initialized successfully (tables checked/created).")
-    except Exception as e:
-        logging.error(f"Failed to initialize database: {e}")
-        # Decide if the application should stop if DB init fails
-        raise
+    logging.info("[Placeholder] Initializing database connection...")
+    # Implement DB connection setup (e.g., using SQLAlchemy, psycopg2)
+    # Create tables if they don't exist based on models
+    pass
 
 # --- Data Insertion Functions --- #
 def log_trade_to_db(strategy: str, **kwargs):
@@ -157,40 +97,20 @@ def log_trade_to_db(strategy: str, **kwargs):
     except Exception as e:
         logging.error(f"Failed to log trade to DB: {e}")
 
-def log_sentiment_to_db(**kwargs):
-    """Logs sentiment analysis results to 'sentiment_logs'."""
-    allowed_cols = ['keyword', 'sentiment', 'score', 'article_count']
-    cols = [k for k in allowed_cols if k in kwargs]
-    if not cols:
-        logging.warning("No valid columns found to log sentiment.")
-        return
-    values_placeholder = ', '.join(['%s'] * len(cols))
-    sql = f"INSERT INTO sentiment_logs ({', '.join(cols)}) VALUES ({values_placeholder})"
-    values = [kwargs.get(k) for k in cols]
-    try:
-        with get_db_cursor(commit=True) as cursor:
-            cursor.execute(sql, tuple(values))
-        logging.debug(f"Sentiment logged to DB: {kwargs}")
-    except Exception as e:
-        logging.error(f"Failed to log sentiment to DB: {e}")
+def log_sentiment_to_db(sentiment_data: dict):
+    logging.debug(f"[Placeholder] Logging sentiment data to DB: {sentiment_data}")
+    # Implement DB logging logic
+    pass
 
-def log_volatility_to_db(**kwargs):
-    """Logs volatility check results to 'volatility_logs'."""
-    allowed_cols = ['symbol', 'check_time', 'is_anomaly', 'actual_price',
-                    'predicted_price', 'deviation_percent']
-    cols = [k for k in allowed_cols if k in kwargs]
-    if not cols:
-        logging.warning("No valid columns found to log volatility.")
-        return
-    values_placeholder = ', '.join(['%s'] * len(cols))
-    sql = f"INSERT INTO volatility_logs ({', '.join(cols)}) VALUES ({values_placeholder})"
-    values = [kwargs.get(k) for k in cols]
-    try:
-        with get_db_cursor(commit=True) as cursor:
-            cursor.execute(sql, tuple(values))
-        logging.debug(f"Volatility logged to DB: {kwargs}")
-    except Exception as e:
-        logging.error(f"Failed to log volatility to DB: {e}")
+def log_volatility_to_db(volatility_data: dict):
+    logging.debug(f"[Placeholder] Logging volatility data to DB: {volatility_data}")
+    # Implement DB logging logic
+    pass
+
+def log_anomaly_to_db(anomaly_data: dict):
+    logging.debug(f"[Placeholder] Logging anomaly data to DB: {anomaly_data}")
+    # Implement DB logging logic
+    pass
 
 def log_prediction_to_db(**kwargs):
     """Logs AI prediction results to the 'prediction_logs' table."""

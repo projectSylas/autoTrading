@@ -1,0 +1,10 @@
+{
+    "Total Return [%]": 0.03861113021609427,
+    "Max Drawdown [%]": 0.010128850662846878,
+    "Total Trades": 5,
+    "Win Rate [%]": 100.0,
+    "Sharpe Ratio": 7.906145993583406,
+    "pullback_threshold": 0.03,
+    "sl_stop": 0.03,
+    "tp_stop": 0.06
+}

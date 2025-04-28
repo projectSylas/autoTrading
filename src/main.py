@@ -5,8 +5,11 @@ from datetime import datetime
 import pandas as pd
 import os
 
-# 설정 로드
-from src.config import settings as config
+# 설정 로드 (수정)
+# from src.config import settings as config # 이전 방식
+from src.config.settings import settings as config # 수정된 방식: settings 인스턴스를 직접 임포트
+
+# --- 디버깅 코드 제거 ---
 
 # 기능 모듈 임포트 (오류 발생 시에도 main 실행은 가능하도록 try-except 사용)
 try:
@@ -26,8 +29,15 @@ try:
     from src.analysis.volatility import run_volatility_check
     # 또는 detect_anomaly 함수만 직접 임포트할 수도 있음
 except ImportError:
-    logging.error("src.analysis.volatility 로드 실패. 변동성 감지 기능 비활성화됨.")
+    logging.error("src.analysis.volatility 로드 실패. 변동성 계산 기능 비활성화됨.")
     run_volatility_check = None
+
+# 추가: 이상 탐지 모듈 임포트
+try:
+    from src.analysis.volatility_alert import check_price_anomaly_and_notify
+except ImportError:
+    logging.error("src.analysis.volatility_alert 로드 실패. 가격 이상 탐지 기능 비활성화됨.")
+    check_price_anomaly_and_notify = None
 
 # 알림 모듈 임포트
 try:
@@ -37,17 +47,6 @@ except ImportError:
     send_slack_notification = None
     format_dataframe_for_slack = None # 포맷팅 함수도 같이 처리
     create_slack_block = None
-
-# 데이터베이스 초기화 시도 (애플리케이션 시작 시)
-try:
-    from src.utils.database import initialize_database
-    initialize_database()
-except ImportError:
-    logging.error("src.utils.database 모듈을 찾을 수 없습니다. DB 초기화 불가.")
-except Exception as e:
-    logging.error(f"데이터베이스 초기화 중 오류 발생: {e}. 시스템 중단 가능성.")
-    # 필요 시 여기서 시스템 종료 처리
-    # raise
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -166,7 +165,7 @@ def run_analysis_pipeline():
             results_summary['volatility'] = f"오류: {e}"
         logging.info("--- 📈 변동성 감지 종료 ---")
     else:
-        logging.info("변동성 감지 기능 비활성화됨.")
+        logging.info("변동성 계산 기능 비활성화됨.") # 메시지 수정
 
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -182,15 +181,80 @@ def run_analysis_pipeline():
 # schedule.every(1).minutes.do(run_analysis_pipeline) # 테스트용: 1분마다 실행
 
 
+# --- 가격 이상 탐지 잡 정의 ---
+def run_anomaly_detection_job():
+    """Prophet 기반 가격 이상 탐지를 실행하고 결과를 알리는 잡."""
+    if not config.ENABLE_ANOMALY_DETECTION or not check_price_anomaly_and_notify:
+        logging.debug("가격 이상 탐지 기능 비활성화됨.")
+        return
+
+    logging.info("--- 🚨 가격 이상 탐지 시작 ---")
+    try:
+        # check_price_anomaly_and_notify 함수는 내부적으로 필요한 데이터 가져오기,
+        # 예측, 비교, 알림 전송을 모두 수행한다고 가정합니다.
+        # 필요한 파라미터 (심볼, 임계값 등)는 config에서 가져옵니다.
+        symbol = config.CHALLENGE_SYMBOL # 또는 관련 설정값
+        threshold_pct = config.ANOMALY_THRESHOLD_PCT # 예시 임계값 설정
+
+        # 함수 호출 시 파라미터 전달 (구현에 따라 달라질 수 있음)
+        anomaly_detected = check_price_anomaly_and_notify(
+            symbol=symbol,
+            threshold_pct=threshold_pct
+            # 필요한 다른 인자들... frequency='1h', lookback_days=30 등
+        )
+
+        if anomaly_detected:
+            logging.warning(f"가격 이상 감지됨 (Symbol: {symbol})")
+        else:
+            logging.info(f"가격 이상 없음 (Symbol: {symbol})")
+
+    except Exception as e:
+        logging.error(f"가격 이상 탐지 중 오류 발생: {e}", exc_info=True)
+        if send_slack_notification:
+            send_slack_notification("가격 이상 탐지 오류", f"가격 이상 탐지 중 오류 발생: {e}", level="error")
+    finally:
+        logging.info("--- 🚨 가격 이상 탐지 종료 ---")
+
+
+# --- 스케줄링 설정 ---
+# 예시: 매일 오전 9시에 전체 분석 파이프라인 실행
+if config.ENABLE_ANALYSIS_PIPELINE:
+    schedule.every().day.at("09:00").do(run_analysis_pipeline)
+    logging.info("분석 파이프라인이 매일 09:00에 실행되도록 예약되었습니다.")
+
+# 추가: 매시간 정각에 가격 이상 탐지 실행
+if config.ENABLE_ANOMALY_DETECTION and check_price_anomaly_and_notify:
+    schedule.every().hour.at(":00").do(run_anomaly_detection_job)
+    logging.info("가격 이상 탐지 작업이 매시간 정각에 실행되도록 예약되었습니다.")
+
+# schedule.every(1).minutes.do(run_analysis_pipeline) # 테스트용: 1분마다 실행
+
+
 if __name__ == "__main__":
-    logging.info("자동 분석 시스템 시작...")
-    # 즉시 1회 실행
-    run_analysis_pipeline()
+    logging.info("===== 시스템 시작 =====")
+    # config.check_env_vars() # 시작 시 환경 변수 유효성 검사 -> 제거 (settings.py 내부에서 처리)
+    logging.info("환경 변수 로드 및 검사 완료.")
 
-    # 스케줄러 실행 (주석 해제 시 사용)
-    # logging.info("스케줄러 시작. 대기 중...")
-    # while True:
-    #     schedule.run_pending()
-    #     time.sleep(60) # 1분마다 체크
+    # --- 초기 실행 (선택 사항) ---
+    # 시스템 시작 시 즉시 실행할 잡이 있다면 여기에 추가
+    # 예: run_analysis_pipeline()
+    # 예: run_anomaly_detection_job()
 
-    logging.info("자동 분석 시스템 종료.") 
+
+    # --- 스케줄러 실행 ---
+    logging.info("스케줄러 시작. 예약된 작업을 대기합니다...")
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(1) # CPU 사용량 감소를 위해 짧은 대기
+        except KeyboardInterrupt:
+            logging.info("사용자에 의해 시스템 종료 요청됨.")
+            break
+        except Exception as e:
+            logging.error(f"스케줄러 실행 중 예기치 않은 오류 발생: {e}", exc_info=True)
+            # 심각한 오류 시 알림 또는 재시작 로직 추가 가능
+            if send_slack_notification:
+                send_slack_notification("시스템 오류", f"메인 스케줄러 루프에서 오류 발생: {e}", level="critical")
+            time.sleep(60) # 오류 발생 시 잠시 대기 후 계속
+
+    logging.info("===== 시스템 종료 =====") 

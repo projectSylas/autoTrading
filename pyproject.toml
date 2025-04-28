@@ -40,6 +40,9 @@ scikit-learn = "^1.6.1"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.5"
+optuna = "^4.3.0"
+backtrader = "^1.9.78.123"
+matplotlib = "^3.10.1"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
