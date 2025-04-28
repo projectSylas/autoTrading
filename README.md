@@ -20,7 +20,10 @@
 *   **Slack 알림**: 매매 신호, 오류, 분석 결과 등 알림. (`src/utils/notifier.py`, 기본 함수 구조 존재, 상세 구현 필요)
 *   **변동성 이상 감지 (Prophet)**: 가격 예측 기반 이상 변동성 감지 및 알림. (`src/analysis/volatility.py`, `main.py`에서 호출되나 상세 로직 구현 필요)
 *   **설정 관리**: API 키, 전략/모델 파라미터 중앙 관리. (`src/config/settings.py`, `.env`, 구현 완료)
-*   **유틸리티**: 공통 함수, 기술 지표 계산 등. (`src/utils/common.py`, `src/utils/strategy_utils.py`, 구현 완료)
+*   **유틸리티**: 공통 함수, 기술 지표 계산 등.
+    *   **범용 유틸리티**: 데이터 로딩, VIX 조회, 로깅 등 기본 기능 (`src/utils/common.py`) 
+    *   **전략 유틸리티**: 기술적 분석, 신호 감지 함수 등 (`src/utils/strategy_utils.py`)
+    *   **최근 개선**: 중복 코드 제거 및 기능 통합 완료 (기술적 분석 함수를 `strategy_utils.py`로 통합)
 *   **실행 제어 (`main.py`)**: 분석 파이프라인(백테스트, 감성, 변동성) 호출 구조 존재. 실제 전략 스케줄링 및 실행 로직 미구현.
 *   **데이터 시각화**: DB 데이터 기반 시각화. (`src/analysis/visualizer.py`, 구현 예정)
 *   **자동 리포팅**: 일일 요약 리포트 Slack 전송. (`scripts/auto_report.py`, 구현 예정)
@@ -45,6 +48,8 @@
     *   `newsapi-python`, `transformers`, `torch`, `scikit-learn` (AI/Sentiment/Prediction)
     *   `prophet` (변동성 감지)
     *   `psycopg2-binary` (PostgreSQL)
+    *   `numba` (성능 최적화)
+    *   `vectorbt` (백테스팅 확장)
     # RL 관련 라이브러리 (stable-baselines3 등)는 필요시 추가
 
 ## 📁 프로젝트 구조 (주요 디렉토리)
@@ -56,9 +61,13 @@
 │   ├── core/                    # 안정형 포트폴리오 전략
 │   ├── challenge/               # 챌린지 전략 (규칙 기반)
 │   ├── backtesting/             # 백테스팅 모듈 (backtrader)
+│   │   ├── backtest_runner.py   # 백테스트 실행기 (통합됨)
+│   │   └── strategies/          # 백테스트 전략 모듈
 │   ├── ai_models/               # AI 모델 (예측, 감성분석)
 │   ├── analysis/                # 데이터 분석 (변동성, 시각화)
 │   ├── utils/                   # 공통 유틸리티 (DB, 알림, 지표 계산 등)
+│   │   ├── common.py            # 범용 유틸리티 (데이터 로딩, 로깅 등)
+│   │   └── strategy_utils.py    # 기술적 분석 함수 통합
 │   └── config/                  # 설정 관리
 ├── scripts/                   # 보조 스크립트 (자동 리포팅 등)
 ├── docker/                    # Docker 설정
@@ -66,6 +75,8 @@
 ├── tests/                     # 유닛 테스트 코드
 ├── model_weights/             # 학습된 모델 가중치 (Git 무시)
 ├── logs/                      # 로그 파일 저장 (필요시)
+├── docs/                      # 문서 및 분석 자료
+│   └── code_analysis_summary.md # 코드 분석 요약
 ├── .env                       # 환경 변수 (Git 무시)
 ├── .gitignore
 ├── README.md                  # 프로젝트 설명 (본 파일)
@@ -179,15 +190,32 @@
 1.  **챌린지 전략 개선 (최우선)**: 백테스트에서 거래가 발생하지 않는 문제 해결 (진입/청산 조건 로직 및 파라미터 재검토).
 2.  **실제 주문 연동**: Challenge 전략 및 Core 전략의 실제 거래소 API 연동 및 주문 실행 로직 구현.
 3.  **Core Portfolio 전략 구현**: `src/core/portfolio.py`에 안정형 포트폴리오 로직 상세 구현.
-4.  **DB 로깅 완성**: `utils/database.py`의 모든 로깅 함수 상세 구현 및 실제 데이터 저장 확인.
-5.  **Slack 알림 완성**: `utils/notifier.py` 상세 구현 및 다양한 상황별 알림 연동.
-6.  **메인 스케줄러 완성**: `src/main.py`에 실제 전략 실행 스케줄링 로직 구현.
-7.  **변동성 감지 로직 구현**: `src/analysis/volatility.py`에 Prophet 기반 상세 로직 구현.
-8.  **시각화 모듈 구현**: `src/analysis/visualizer.py` 구현.
-9.  **자동 리포팅 구현**: `scripts/auto_report.py` 구현.
-10. **테스트 커버리지 확대**: 주요 기능에 대한 유닛/통합 테스트 추가.
-11. **오류 처리 강화**: API 오류, 데이터 오류 등 예외 처리 및 안정성 강화.
-12. **(Optional) RL 기반 전략 구체화 및 통합**.
+4.  **감성 분석 모듈 통합**: 중복된 감성 분석 모듈들을 통합하여 하나의 일관된 방식으로 제공.
+5.  **변동성 감지 모듈 통합**: `volatility_alert.py`와 `volatility.py`의 기능을 통합 또는 역할 명확화.
+6.  **DB 로깅 완성**: `utils/database.py`의 모든 로깅 함수 상세 구현 및 실제 데이터 저장 확인.
+7.  **Slack 알림 완성**: `utils/notifier.py` 상세 구현 및 다양한 상황별 알림 연동.
+8.  **메인 스케줄러 완성**: `src/main.py`에 실제 전략 실행 스케줄링 로직 구현.
+9.  **시각화 모듈 구현**: `src/analysis/visualizer.py` 구현.
+10. **자동 리포팅 구현**: `scripts/auto_report.py` 구현.
+11. **테스트 커버리지 확대**: 주요 기능에 대한 유닛/통합 테스트 추가.
+12. **오류 처리 강화**: API 오류, 데이터 오류 등 예외 처리 및 안정성 강화.
+13. **(Optional) RL 기반 전략 구체화 및 통합**.
+
+## 📝 최근 개선 사항 (2024-08-05)
+
+1. **코드베이스 정리 및 중복 제거**
+   * 기술적 분석 함수들을 `src/utils/common.py`에서 제거하고 `src/utils/strategy_utils.py`로 통합하여 유지보수성 향상
+   * 중복되는 백테스트 관련 파일 정리 (`src/backtest/` 내의 불필요한 파일들 제거)
+   * `src/backtesting/backtest_runner.py`를 주력 백테스트 실행기로 통합
+
+2. **문서화 개선**
+   * `docs/code_analysis_summary.md` 업데이트하여 코드 구조 및 개선 사항 문서화
+   * README.md 업데이트하여 최신 프로젝트 구조 반영
+
+3. **다음 개선 계획**
+   * 감성 분석 모듈 통합 (중복된 구현 제거)
+   * 변동성 감지 로직 통합 및 개선
+   * RL 에이전트 학습 모듈 정리
 
 ---
-*README 최종 업데이트: 2024-08-01*
+*README 최종 업데이트: 2024-08-05*
